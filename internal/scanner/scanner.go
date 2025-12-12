@@ -106,7 +106,7 @@ func (s *NucleiScanner) Scan(ctx context.Context, targets []string, options Scan
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Write targets to a file
 	targetsFile := filepath.Join(tmpDir, "targets.txt")

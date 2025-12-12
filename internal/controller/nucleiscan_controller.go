@@ -92,7 +92,7 @@ type NucleiScanReconciler struct {
 }
 
 // NewNucleiScanReconciler creates a new NucleiScanReconciler with default settings
-func NewNucleiScanReconciler(client client.Client, scheme *runtime.Scheme, scanner scanner.Scanner) *NucleiScanReconciler {
+func NewNucleiScanReconciler(c client.Client, scheme *runtime.Scheme, s scanner.Scanner) *NucleiScanReconciler {
 	rescanAge := defaultRescanAge
 	if envVal := os.Getenv(envRescanAge); envVal != "" {
 		if parsed, err := time.ParseDuration(envVal); err == nil {
@@ -122,9 +122,9 @@ func NewNucleiScanReconciler(client client.Client, scheme *runtime.Scheme, scann
 	}
 
 	return &NucleiScanReconciler{
-		Client:    client,
+		Client:    c,
 		Scheme:    scheme,
-		Scanner:   scanner,
+		Scanner:   s,
 		RescanAge: rescanAge,
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -364,7 +364,7 @@ func (r *NucleiScanReconciler) checkTargetsAvailability(ctx context.Context, tar
 			unavailable = append(unavailable, target)
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		// Consider any response (even 4xx/5xx) as "available" - the service is responding
 		available = append(available, target)

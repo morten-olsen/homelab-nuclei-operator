@@ -27,7 +27,7 @@ FROM alpine:3.19 AS final
 # Build arguments for nuclei version and architecture
 ARG TARGETOS
 ARG TARGETARCH
-ARG NUCLEI_VERSION=3.3.7
+ARG NUCLEI_VERSION=3.6.0
 
 # Install ca-certificates for HTTPS requests, curl for downloading, and create non-root user
 RUN apk --no-cache add ca-certificates tzdata curl unzip && \

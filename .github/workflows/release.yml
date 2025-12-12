@@ -179,13 +179,33 @@ jobs:
           sed -i "s/^version:.*/version: ${{ needs.version.outputs.new_version }}/" charts/nuclei-operator/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${{ needs.version.outputs.new_version }}\"/" charts/nuclei-operator/Chart.yaml
 
+      - name: Download existing Helm packages and index
+        run: |
+          # Download existing index.yaml if it exists
+          curl -fsSL https://morten-olsen.github.io/homelab-nuclei-operator/index.yaml -o _site/index.yaml || echo "No existing index.yaml found, will create new one"
+
+          # Download all existing chart packages referenced in the index
+          if [ -f _site/index.yaml ]; then
+            # Extract all .tgz URLs from the index and download them
+            grep -oP 'https://[^"]+\.tgz' _site/index.yaml | sort -u | while read url; do
+              filename=$(basename "$url")
+              echo "Downloading existing package: $filename"
+              curl -fsSL "$url" -o "_site/$filename" || echo "Warning: Could not download $filename"
+            done
+          fi
+
       - name: Package Helm chart
         run: |
           helm package charts/nuclei-operator -d _site
 
       - name: Generate Helm repo index
         run: |
-          helm repo index _site --url https://morten-olsen.github.io/homelab-nuclei-operator
+          # Merge new package into existing index, or create new index if none exists
+          if [ -f _site/index.yaml ]; then
+            helm repo index _site --url https://morten-olsen.github.io/homelab-nuclei-operator --merge _site/index.yaml
+          else
+            helm repo index _site --url https://morten-olsen.github.io/homelab-nuclei-operator
+          fi
 
       - name: Create index.html
         run: |

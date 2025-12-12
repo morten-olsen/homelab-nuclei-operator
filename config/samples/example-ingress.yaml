@@ -1,0 +1,75 @@
+# Example Ingress resource that would trigger NucleiScan creation
+# When this Ingress is created, the nuclei-operator will automatically
+# create a corresponding NucleiScan resource to scan the exposed endpoints.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-app-ingress
+  namespace: default
+  labels:
+    app.kubernetes.io/name: example-app
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    # Optional: Add annotations to customize scan behavior
+    # nuclei.homelab.mortenolsen.pro/scan-enabled: "true"
+    # nuclei.homelab.mortenolsen.pro/severity: "high,critical"
+    kubernetes.io/ingress.class: nginx
+spec:
+  # TLS configuration - endpoints will be scanned with HTTPS
+  tls:
+    - hosts:
+        - example.example.com
+        - api.example.com
+      secretName: example-tls-secret
+  rules:
+    # Main application endpoint
+    - host: example.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-app
+                port:
+                  number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: example-api
+                port:
+                  number: 8080
+    # API endpoint
+    - host: api.example.com
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8080
+---
+# Example Ingress without TLS (HTTP only)
+# This will be scanned with HTTP scheme
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: internal-app-ingress
+  namespace: default
+  labels:
+    app.kubernetes.io/name: internal-app
+spec:
+  rules:
+    - host: internal.example.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: internal-app
+                port:
+                  number: 80

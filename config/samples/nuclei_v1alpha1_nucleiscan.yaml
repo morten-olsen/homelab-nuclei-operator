@@ -1,0 +1,94 @@
+# Example NucleiScan resource
+# This demonstrates a complete NucleiScan configuration
+apiVersion: nuclei.homelab.mortenolsen.pro/v1alpha1
+kind: NucleiScan
+metadata:
+  labels:
+    app.kubernetes.io/name: nuclei-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: nucleiscan-sample
+  namespace: default
+spec:
+  # Reference to the source resource that triggered this scan
+  # This is typically set automatically by the Ingress/VirtualService controllers
+  sourceRef:
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    name: example-ingress
+    namespace: default
+    uid: "placeholder-uid"
+  
+  # Target URLs to scan
+  # These are extracted from the source Ingress/VirtualService
+  targets:
+    - https://example.com
+    - https://example.com/api
+    - https://example.com/admin
+  
+  # Severity levels to include in the scan
+  # Options: info, low, medium, high, critical
+  severity:
+    - medium
+    - high
+    - critical
+  
+  # Optional: Specific Nuclei templates to use
+  # If not specified, all templates matching the severity will be used
+  templates:
+    - cves/
+    - vulnerabilities/
+    - exposures/
+  
+  # Optional: Schedule for periodic rescanning (cron format)
+  # Examples:
+  #   "0 2 * * *"     - Daily at 2 AM
+  #   "0 */6 * * *"   - Every 6 hours
+  #   "@every 24h"    - Every 24 hours (simplified format)
+  schedule: "@every 24h"
+  
+  # Optional: Suspend scheduled scans
+  # Set to true to pause scheduled scans without deleting the resource
+  suspend: false
+---
+# Example NucleiScan for a specific security audit
+apiVersion: nuclei.homelab.mortenolsen.pro/v1alpha1
+kind: NucleiScan
+metadata:
+  labels:
+    app.kubernetes.io/name: nuclei-operator
+    app.kubernetes.io/managed-by: kustomize
+    security-audit: "true"
+  name: security-audit-scan
+  namespace: default
+spec:
+  sourceRef:
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    name: production-ingress
+    namespace: production
+    uid: "audit-placeholder-uid"
+  
+  targets:
+    - https://api.example.com
+    - https://www.example.com
+  
+  # Full severity scan for security audit
+  severity:
+    - info
+    - low
+    - medium
+    - high
+    - critical
+  
+  # Comprehensive template coverage
+  templates:
+    - cves/
+    - vulnerabilities/
+    - exposures/
+    - misconfiguration/
+    - default-logins/
+  
+  # Weekly security audit
+  schedule: "0 3 * * 0"
+  
+  suspend: false

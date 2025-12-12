@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+spec:
+  # Production replica count for high availability
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: manager
+          # Higher resource limits for production workloads
+          resources:
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+          env:
+            # Production environment variables
+            - name: NUCLEI_BINARY_PATH
+              value: "/usr/local/bin/nuclei"
+            - name: NUCLEI_TEMPLATES_PATH
+              value: "/nuclei-templates"
+            - name: NUCLEI_TIMEOUT
+              value: "60m"
+            - name: NUCLEI_RATE_LIMIT
+              value: "150"
+            - name: NUCLEI_BULK_SIZE
+              value: "25"
+            - name: NUCLEI_CONCURRENCY
+              value: "25"
+            # Enable metrics
+            - name: ENABLE_METRICS
+              value: "true"
+          # Production volume mounts with persistent templates
+          volumeMounts:
+            - name: nuclei-templates
+              mountPath: /nuclei-templates
+              readOnly: true
+            - name: nuclei-cache
+              mountPath: /home/nonroot/.nuclei
+      # Production volumes - consider using PVC for templates in production
+      volumes:
+        - name: nuclei-templates
+          emptyDir: {}
+        - name: nuclei-cache
+          emptyDir: {}
+      # Pod anti-affinity for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    control-plane: controller-manager
+                topologyKey: kubernetes.io/hostname
+      # Topology spread for better distribution
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              control-plane: controller-manager

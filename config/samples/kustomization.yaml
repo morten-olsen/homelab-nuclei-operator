@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- nuclei_v1alpha1_nucleiscan.yaml
+- example-ingress.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

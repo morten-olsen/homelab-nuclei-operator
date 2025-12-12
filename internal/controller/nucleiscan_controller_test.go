@@ -51,7 +51,16 @@ var _ = Describe("NucleiScan Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: nucleiv1alpha1.NucleiScanSpec{
+						SourceRef: nucleiv1alpha1.SourceReference{
+							APIVersion: "networking.k8s.io/v1",
+							Kind:       "Ingress",
+							Name:       "test-ingress",
+							Namespace:  "default",
+							UID:        "test-uid-12345",
+						},
+						Targets: []string{"https://example.com"},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

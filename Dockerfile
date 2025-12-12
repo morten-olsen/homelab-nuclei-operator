@@ -21,21 +21,27 @@ COPY . .
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
-# Download and build nuclei binary
-FROM golang:1.24 AS nuclei-builder
-ARG TARGETOS
-ARG TARGETARCH
-
-# Install nuclei from source for the target architecture
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-  go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-
 # Final image
 FROM alpine:3.19 AS final
 
-# Install ca-certificates for HTTPS requests and create non-root user
-RUN apk --no-cache add ca-certificates tzdata && \
+# Build arguments for nuclei version and architecture
+ARG TARGETOS
+ARG TARGETARCH
+ARG NUCLEI_VERSION=3.3.7
+
+# Install ca-certificates for HTTPS requests, curl for downloading, and create non-root user
+RUN apk --no-cache add ca-certificates tzdata curl unzip && \
   adduser -D -u 65532 -g 65532 nonroot
+
+# Download prebuilt nuclei binary
+# ProjectDiscovery uses different naming: linux_amd64, linux_arm64
+RUN NUCLEI_ARCH=$(echo ${TARGETARCH} | sed 's/amd64/amd64/;s/arm64/arm64/') && \
+  curl -sSL "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${NUCLEI_ARCH}.zip" -o /tmp/nuclei.zip && \
+  unzip /tmp/nuclei.zip -d /tmp && \
+  mv /tmp/nuclei /usr/local/bin/nuclei && \
+  chmod +x /usr/local/bin/nuclei && \
+  rm -rf /tmp/nuclei.zip /tmp/nuclei && \
+  apk del curl unzip
 
 # Create directories for nuclei
 RUN mkdir -p /nuclei-templates /home/nonroot/.nuclei && \
@@ -45,9 +51,6 @@ WORKDIR /
 
 # Copy the manager binary
 COPY --from=builder /workspace/manager .
-
-# Copy nuclei binary
-COPY --from=nuclei-builder /go/bin/nuclei /usr/local/bin/nuclei
 
 # Set ownership
 RUN chown 65532:65532 /manager /usr/local/bin/nuclei

@@ -73,6 +73,21 @@ spec:
             value: "/nuclei-templates"
           - name: NUCLEI_TIMEOUT
             value: "30m"
+          # NUCLEI_RESCAN_AGE controls how old scan results can be before
+          # triggering an automatic rescan. Default is 168h (1 week).
+          # Set to "0" to disable automatic rescans based on age.
+          - name: NUCLEI_RESCAN_AGE
+            value: "168h"
+          # Backoff configuration for target availability checks
+          # NUCLEI_BACKOFF_INITIAL: Initial retry interval (default: 10s)
+          - name: NUCLEI_BACKOFF_INITIAL
+            value: "10s"
+          # NUCLEI_BACKOFF_MAX: Maximum retry interval (default: 10m)
+          - name: NUCLEI_BACKOFF_MAX
+            value: "10m"
+          # NUCLEI_BACKOFF_MULTIPLIER: Multiplier for exponential backoff (default: 2.0)
+          - name: NUCLEI_BACKOFF_MULTIPLIER
+            value: "2.0"
         securityContext:
           readOnlyRootFilesystem: false  # Nuclei needs to write temporary files
           allowPrivilegeEscalation: false

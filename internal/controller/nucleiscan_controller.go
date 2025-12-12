@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"os"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -41,6 +43,20 @@ const (
 	defaultRequeueAfter      = 30 * time.Second
 	defaultScheduleRequeue   = 1 * time.Minute
 	defaultErrorRequeueAfter = 1 * time.Minute
+
+	// Default rescan age (1 week)
+	defaultRescanAge = 7 * 24 * time.Hour
+
+	// Default backoff settings for target availability checks
+	defaultBackoffInitial    = 10 * time.Second // Initial retry interval
+	defaultBackoffMax        = 10 * time.Minute // Maximum retry interval
+	defaultBackoffMultiplier = 2.0              // Multiplier for exponential backoff
+
+	// Environment variables
+	envRescanAge         = "NUCLEI_RESCAN_AGE"
+	envBackoffInitial    = "NUCLEI_BACKOFF_INITIAL"
+	envBackoffMax        = "NUCLEI_BACKOFF_MAX"
+	envBackoffMultiplier = "NUCLEI_BACKOFF_MULTIPLIER"
 )
 
 // Condition types for NucleiScan
@@ -58,11 +74,92 @@ const (
 	ReasonScanSuspended = "ScanSuspended"
 )
 
+// BackoffConfig holds configuration for exponential backoff
+type BackoffConfig struct {
+	Initial    time.Duration
+	Max        time.Duration
+	Multiplier float64
+}
+
 // NucleiScanReconciler reconciles a NucleiScan object
 type NucleiScanReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Scanner scanner.Scanner
+	Scheme     *runtime.Scheme
+	Scanner    scanner.Scanner
+	RescanAge  time.Duration
+	HTTPClient *http.Client
+	Backoff    BackoffConfig
+}
+
+// NewNucleiScanReconciler creates a new NucleiScanReconciler with default settings
+func NewNucleiScanReconciler(client client.Client, scheme *runtime.Scheme, scanner scanner.Scanner) *NucleiScanReconciler {
+	rescanAge := defaultRescanAge
+	if envVal := os.Getenv(envRescanAge); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			rescanAge = parsed
+		}
+	}
+
+	backoffInitial := defaultBackoffInitial
+	if envVal := os.Getenv(envBackoffInitial); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			backoffInitial = parsed
+		}
+	}
+
+	backoffMax := defaultBackoffMax
+	if envVal := os.Getenv(envBackoffMax); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			backoffMax = parsed
+		}
+	}
+
+	backoffMultiplier := defaultBackoffMultiplier
+	if envVal := os.Getenv(envBackoffMultiplier); envVal != "" {
+		if parsed, err := parseFloat(envVal); err == nil && parsed > 0 {
+			backoffMultiplier = parsed
+		}
+	}
+
+	return &NucleiScanReconciler{
+		Client:    client,
+		Scheme:    scheme,
+		Scanner:   scanner,
+		RescanAge: rescanAge,
+		HTTPClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+		Backoff: BackoffConfig{
+			Initial:    backoffInitial,
+			Max:        backoffMax,
+			Multiplier: backoffMultiplier,
+		},
+	}
+}
+
+// parseFloat parses a string to float64
+func parseFloat(s string) (float64, error) {
+	var f float64
+	_, err := fmt.Sscanf(s, "%f", &f)
+	return f, err
+}
+
+// calculateBackoff calculates the next backoff duration based on retry count
+func (r *NucleiScanReconciler) calculateBackoff(retryCount int) time.Duration {
+	if retryCount <= 0 {
+		return r.Backoff.Initial
+	}
+
+	// Calculate exponential backoff: initial * multiplier^retryCount
+	backoff := float64(r.Backoff.Initial)
+	for i := 0; i < retryCount; i++ {
+		backoff *= r.Backoff.Multiplier
+		if backoff > float64(r.Backoff.Max) {
+			return r.Backoff.Max
+		}
+	}
+
+	return time.Duration(backoff)
 }
 
 // +kubebuilder:rbac:groups=nuclei.homelab.mortenolsen.pro,resources=nucleiscans,verbs=get;list;watch;create;update;patch;delete
@@ -118,9 +215,15 @@ func (r *NucleiScanReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	case nucleiv1alpha1.ScanPhasePending:
 		return r.handlePendingPhase(ctx, nucleiScan)
 	case nucleiv1alpha1.ScanPhaseRunning:
-		// This shouldn't happen in our synchronous implementation
-		// but handle it gracefully
-		return r.handlePendingPhase(ctx, nucleiScan)
+		// Running phase on startup means the scan was interrupted (operator restart)
+		// Reset to Pending to re-run the scan
+		log.Info("Found stale Running scan, resetting to Pending (operator likely restarted)")
+		nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+		nucleiScan.Status.LastError = "Scan was interrupted due to operator restart, re-queuing"
+		if err := r.Status().Update(ctx, nucleiScan); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
 	case nucleiv1alpha1.ScanPhaseCompleted:
 		return r.handleCompletedPhase(ctx, nucleiScan)
 	case nucleiv1alpha1.ScanPhaseFailed:
@@ -161,7 +264,49 @@ func (r *NucleiScanReconciler) handleDeletion(ctx context.Context, nucleiScan *n
 // handlePendingPhase handles the Pending phase - starts a new scan
 func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Starting scan", "targets", len(nucleiScan.Spec.Targets))
+	log.Info("Preparing to scan", "targets", len(nucleiScan.Spec.Targets))
+
+	// Check if at least one target is available before scanning
+	availableTargets, unavailableTargets := r.checkTargetsAvailability(ctx, nucleiScan.Spec.Targets)
+	if len(availableTargets) == 0 {
+		// Calculate backoff based on retry count
+		retryCount := nucleiScan.Status.RetryCount
+		backoffDuration := r.calculateBackoff(retryCount)
+
+		log.Info("No targets are available yet, waiting with backoff...",
+			"unavailable", len(unavailableTargets),
+			"retryCount", retryCount,
+			"backoffDuration", backoffDuration)
+
+		// Update condition and retry count
+		now := metav1.Now()
+		meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
+			Type:               ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "WaitingForTargets",
+			Message:            fmt.Sprintf("Waiting for targets to become available (%d unavailable, retry #%d, next check in %v)", len(unavailableTargets), retryCount+1, backoffDuration),
+			LastTransitionTime: now,
+		})
+		nucleiScan.Status.LastError = fmt.Sprintf("Targets not available: %v", unavailableTargets)
+		nucleiScan.Status.RetryCount = retryCount + 1
+		nucleiScan.Status.LastRetryTime = &now
+
+		if err := r.Status().Update(ctx, nucleiScan); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Requeue with exponential backoff
+		return ctrl.Result{RequeueAfter: backoffDuration}, nil
+	}
+
+	// Reset retry count since targets are now available
+	if nucleiScan.Status.RetryCount > 0 {
+		log.Info("Targets now available, resetting retry count", "previousRetries", nucleiScan.Status.RetryCount)
+		nucleiScan.Status.RetryCount = 0
+		nucleiScan.Status.LastRetryTime = nil
+	}
+
+	log.Info("Starting scan", "availableTargets", len(availableTargets), "unavailableTargets", len(unavailableTargets))
 
 	// Update status to Running
 	now := metav1.Now()
@@ -175,7 +320,7 @@ func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiSca
 		Type:               ConditionTypeScanActive,
 		Status:             metav1.ConditionTrue,
 		Reason:             ReasonScanRunning,
-		Message:            "Scan is in progress",
+		Message:            fmt.Sprintf("Scan is in progress (%d targets)", len(availableTargets)),
 		LastTransitionTime: now,
 	})
 
@@ -190,8 +335,8 @@ func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiSca
 		Timeout:   30 * time.Minute, // Default timeout
 	}
 
-	// Execute the scan
-	result, err := r.Scanner.Scan(ctx, nucleiScan.Spec.Targets, options)
+	// Execute the scan with available targets only
+	result, err := r.Scanner.Scan(ctx, availableTargets, options)
 	if err != nil {
 		log.Error(err, "Scan failed")
 		return r.handleScanError(ctx, nucleiScan, err)
@@ -199,6 +344,33 @@ func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiSca
 
 	// Update status with results
 	return r.handleScanSuccess(ctx, nucleiScan, result)
+}
+
+// checkTargetsAvailability checks which targets are reachable
+func (r *NucleiScanReconciler) checkTargetsAvailability(ctx context.Context, targets []string) (available []string, unavailable []string) {
+	log := logf.FromContext(ctx)
+
+	for _, target := range targets {
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
+		if err != nil {
+			log.V(1).Info("Failed to create request for target", "target", target, "error", err)
+			unavailable = append(unavailable, target)
+			continue
+		}
+
+		resp, err := r.HTTPClient.Do(req)
+		if err != nil {
+			log.V(1).Info("Target not available", "target", target, "error", err)
+			unavailable = append(unavailable, target)
+			continue
+		}
+		resp.Body.Close()
+
+		// Consider any response (even 4xx/5xx) as "available" - the service is responding
+		available = append(available, target)
+	}
+
+	return available, unavailable
 }
 
 // handleScanSuccess updates the status after a successful scan
@@ -292,6 +464,25 @@ func (r *NucleiScanReconciler) handleCompletedPhase(ctx context.Context, nucleiS
 	// Check if there's a schedule
 	if nucleiScan.Spec.Schedule != "" {
 		return r.checkScheduledScan(ctx, nucleiScan)
+	}
+
+	// Check if scan results are stale (older than RescanAge)
+	if nucleiScan.Status.CompletionTime != nil {
+		age := time.Since(nucleiScan.Status.CompletionTime.Time)
+		if age > r.RescanAge {
+			log.Info("Scan results are stale, triggering rescan", "age", age, "maxAge", r.RescanAge)
+			nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+			nucleiScan.Status.LastError = fmt.Sprintf("Automatic rescan triggered (results were %v old)", age.Round(time.Hour))
+			if err := r.Status().Update(ctx, nucleiScan); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+
+		// Schedule a requeue for when the results will become stale
+		timeUntilStale := r.RescanAge - age
+		log.V(1).Info("Scan results still fresh, will check again later", "timeUntilStale", timeUntilStale)
+		return ctrl.Result{RequeueAfter: timeUntilStale}, nil
 	}
 
 	return ctrl.Result{}, nil

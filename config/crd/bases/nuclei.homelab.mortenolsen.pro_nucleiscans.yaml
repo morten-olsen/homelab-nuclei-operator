@@ -252,6 +252,11 @@ spec:
               lastError:
                 description: LastError contains the error message if the scan failed
                 type: string
+              lastRetryTime:
+                description: LastRetryTime is when the last availability check retry
+                  occurred
+                format: date-time
+                type: string
               lastScanTime:
                 description: LastScanTime is when the last scan was initiated
                 format: date-time
@@ -274,6 +279,11 @@ spec:
                 - Completed
                 - Failed
                 type: string
+              retryCount:
+                description: |-
+                  RetryCount tracks the number of consecutive availability check retries
+                  Used for exponential backoff when waiting for targets
+                type: integer
               summary:
                 description: Summary provides aggregated scan statistics
                 properties:

@@ -191,6 +191,15 @@ type NucleiScanStatus struct {
 	// ObservedGeneration is the generation observed by the controller
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// RetryCount tracks the number of consecutive availability check retries
+	// Used for exponential backoff when waiting for targets
+	// +optional
+	RetryCount int `json:"retryCount,omitempty"`
+
+	// LastRetryTime is when the last availability check retry occurred
+	// +optional
+	LastRetryTime *metav1.Time `json:"lastRetryTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

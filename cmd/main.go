@@ -183,11 +183,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.NucleiScanReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		Scanner: scanner.NewNucleiScannerWithDefaults(),
-	}).SetupWithManager(mgr); err != nil {
+	if err := controller.NewNucleiScanReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		scanner.NewNucleiScannerWithDefaults(),
+	).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NucleiScan")
 		os.Exit(1)
 	}

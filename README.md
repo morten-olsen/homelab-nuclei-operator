@@ -14,6 +14,9 @@ The Nuclei Operator watches for Ingress and VirtualService resources in your Kub
 - **Automatic Discovery**: Watches Kubernetes Ingress and Istio VirtualService resources for new endpoints
 - **Automated Scanning**: Automatically creates and runs Nuclei scans when new endpoints are discovered
 - **Scheduled Scans**: Support for cron-based scheduled rescanning
+- **Automatic Rescans**: Automatically rescans when results become stale (configurable age threshold)
+- **Target Availability Checking**: Waits for targets to be available before scanning
+- **Stale Scan Recovery**: Automatically resets interrupted scans on operator restart
 - **Flexible Configuration**: Configurable templates, severity filters, and scan options
 - **Native Kubernetes Integration**: Results stored as Kubernetes custom resources
 - **Owner References**: Automatic cleanup when source resources are deleted
@@ -167,6 +170,38 @@ The operator can be configured using the following environment variables:
 | `NUCLEI_BINARY_PATH` | Path to the Nuclei binary | `nuclei` |
 | `NUCLEI_TEMPLATES_PATH` | Path to Nuclei templates directory | (uses Nuclei default) |
 | `NUCLEI_TIMEOUT` | Default scan timeout | `30m` |
+| `NUCLEI_RESCAN_AGE` | Maximum age of scan results before automatic rescan | `168h` (1 week) |
+| `NUCLEI_BACKOFF_INITIAL` | Initial retry interval for target availability checks | `10s` |
+| `NUCLEI_BACKOFF_MAX` | Maximum retry interval for target availability checks | `10m` |
+| `NUCLEI_BACKOFF_MULTIPLIER` | Multiplier for exponential backoff | `2.0` |
+
+### Automatic Rescan Behavior
+
+The operator automatically rescans targets when:
+
+1. **Stale Results**: Scan results are older than `NUCLEI_RESCAN_AGE` (default: 1 week)
+2. **Operator Restart**: Any scans that were in "Running" state when the operator restarted are automatically re-queued
+3. **Spec Changes**: When the NucleiScan spec is modified
+
+### Target Availability with Exponential Backoff
+
+Before running a scan, the operator checks if targets are reachable:
+
+- Uses HTTP HEAD requests to verify target availability
+- If no targets are available, the scan waits and retries with **exponential backoff**
+- Backoff sequence with defaults: 10s → 20s → 40s → 80s → 160s → 320s → 600s (max)
+- Scans proceed with available targets even if some are unreachable
+- Any HTTP response (including 4xx/5xx) is considered "available" - the service is responding
+- Retry count is tracked in `status.retryCount` and reset when targets become available
+
+**Backoff Configuration Example:**
+
+```bash
+# Set initial retry to 5 seconds, max to 5 minutes, multiplier to 1.5
+export NUCLEI_BACKOFF_INITIAL=5s
+export NUCLEI_BACKOFF_MAX=5m
+export NUCLEI_BACKOFF_MULTIPLIER=1.5
+```
 
 ### NucleiScan Spec Options
 

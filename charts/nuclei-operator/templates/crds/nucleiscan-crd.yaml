@@ -5,7 +5,8 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
   name: nucleiscans.nuclei.homelab.mortenolsen.pro
-  labels: { { - include "nuclei-operator.labels" . | nindent 4 } }
+  labels:
+    {{- include "nuclei-operator.labels" . | nindent 4 }}
 spec:
   group: nuclei.homelab.mortenolsen.pro
   names:

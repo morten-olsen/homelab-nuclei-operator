@@ -140,16 +140,19 @@ func (r *NucleiScanReconciler) handleDeletion(ctx context.Context, nucleiScan *n
 	log := logf.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(nucleiScan, finalizerName) {
-		log.Info("Handling deletion, performing cleanup")
+		log.Info("Handling deletion, performing cleanup", "name", nucleiScan.Name, "namespace", nucleiScan.Namespace)
 
 		// Perform any cleanup here (e.g., cancel running scans)
 		// In our synchronous implementation, there's nothing to clean up
 
 		// Remove finalizer
+		log.Info("Removing finalizer", "finalizer", finalizerName)
 		controllerutil.RemoveFinalizer(nucleiScan, finalizerName)
 		if err := r.Update(ctx, nucleiScan); err != nil {
+			log.Error(err, "Failed to remove finalizer", "name", nucleiScan.Name, "namespace", nucleiScan.Namespace)
 			return ctrl.Result{}, err
 		}
+		log.Info("Finalizer removed successfully", "name", nucleiScan.Name, "namespace", nucleiScan.Namespace)
 	}
 
 	return ctrl.Result{}, nil

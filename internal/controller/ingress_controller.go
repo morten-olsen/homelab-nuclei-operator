@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	nucleiv1alpha1 "github.com/mortenolsen/nuclei-operator/api/v1alpha1"
+	"github.com/mortenolsen/nuclei-operator/internal/annotations"
 )
 
 // IngressReconciler reconciles Ingress objects and creates NucleiScan resources
@@ -59,12 +60,8 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	// Extract target URLs from the Ingress
-	targets := extractURLsFromIngress(ingress)
-	if len(targets) == 0 {
-		log.Info("No targets extracted from Ingress, skipping NucleiScan creation")
-		return ctrl.Result{}, nil
-	}
+	// Parse annotations to get scan configuration
+	scanConfig := annotations.ParseAnnotations(ingress.Annotations)
 
 	// Define the NucleiScan name based on the Ingress name
 	nucleiScanName := fmt.Sprintf("%s-scan", ingress.Name)
@@ -81,23 +78,48 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	// Check if scanning is disabled via annotations
+	if !scanConfig.IsEnabled() {
+		// Scanning disabled - delete existing NucleiScan if it exists
+		if err == nil {
+			log.Info("Scanning disabled via annotation, deleting existing NucleiScan", "nucleiScan", nucleiScanName)
+			if err := r.Delete(ctx, existingScan); err != nil && !apierrors.IsNotFound(err) {
+				log.Error(err, "Failed to delete NucleiScan")
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Extract target URLs from the Ingress
+	targets := extractURLsFromIngress(ingress)
+	if len(targets) == 0 {
+		log.Info("No targets extracted from Ingress, skipping NucleiScan creation")
+		return ctrl.Result{}, nil
+	}
+
 	if apierrors.IsNotFound(err) {
 		// Create a new NucleiScan
+		spec := nucleiv1alpha1.NucleiScanSpec{
+			SourceRef: nucleiv1alpha1.SourceReference{
+				APIVersion: "networking.k8s.io/v1",
+				Kind:       "Ingress",
+				Name:       ingress.Name,
+				Namespace:  ingress.Namespace,
+				UID:        string(ingress.UID),
+			},
+			Targets: targets,
+		}
+
+		// Apply annotation configuration to the spec
+		scanConfig.ApplyToNucleiScanSpec(&spec)
+
 		nucleiScan := &nucleiv1alpha1.NucleiScan{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      nucleiScanName,
 				Namespace: ingress.Namespace,
 			},
-			Spec: nucleiv1alpha1.NucleiScanSpec{
-				SourceRef: nucleiv1alpha1.SourceReference{
-					APIVersion: "networking.k8s.io/v1",
-					Kind:       "Ingress",
-					Name:       ingress.Name,
-					Namespace:  ingress.Namespace,
-					UID:        string(ingress.UID),
-				},
-				Targets: targets,
-			},
+			Spec: spec,
 		}
 
 		// Set owner reference for garbage collection
@@ -115,18 +137,31 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// NucleiScan exists - check if targets need to be updated
+	// NucleiScan exists - check if it needs to be updated
+	needsUpdate := false
+
+	// Check if targets changed
 	if !reflect.DeepEqual(existingScan.Spec.Targets, targets) {
 		existingScan.Spec.Targets = targets
-		// Also update the SourceRef UID in case it changed (e.g., Ingress was recreated)
-		existingScan.Spec.SourceRef.UID = string(ingress.UID)
+		needsUpdate = true
+	}
 
+	// Also update the SourceRef UID in case it changed (e.g., Ingress was recreated)
+	if existingScan.Spec.SourceRef.UID != string(ingress.UID) {
+		existingScan.Spec.SourceRef.UID = string(ingress.UID)
+		needsUpdate = true
+	}
+
+	// Apply annotation configuration
+	scanConfig.ApplyToNucleiScanSpec(&existingScan.Spec)
+
+	if needsUpdate {
 		if err := r.Update(ctx, existingScan); err != nil {
-			log.Error(err, "Failed to update NucleiScan targets")
+			log.Error(err, "Failed to update NucleiScan")
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Updated NucleiScan targets for Ingress", "nucleiScan", nucleiScanName, "targets", targets)
+		log.Info("Updated NucleiScan for Ingress", "nucleiScan", nucleiScanName, "targets", targets)
 	}
 
 	return ctrl.Result{}, nil

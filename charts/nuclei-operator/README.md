@@ -2,6 +2,14 @@
 
 A Helm chart for deploying the Nuclei Operator - a Kubernetes operator that automatically scans Ingress and VirtualService resources using Nuclei security scanner.
 
+## Features
+
+- **Pod-based Scanning Architecture**: Each scan runs in an isolated Kubernetes Job for better scalability and reliability
+- **Annotation-based Configuration**: Configure scanning behavior per-resource using annotations
+- **Automatic Discovery**: Watches Kubernetes Ingress and Istio VirtualService resources
+- **Scheduled Scans**: Support for cron-based scheduled rescanning
+- **Flexible Configuration**: Configurable templates, severity filters, and scan options
+
 ## Prerequisites
 
 - Kubernetes 1.26+
@@ -137,6 +145,24 @@ The following table lists the configurable parameters of the Nuclei Operator cha
 | `nuclei.backoff.max` | Maximum backoff interval | `10m` |
 | `nuclei.backoff.multiplier` | Backoff multiplier | `2.0` |
 
+### Scanner Pod Configuration
+
+The operator uses a pod-based scanning architecture where each scan runs in its own Kubernetes Job. Configure scanner pod behavior with these parameters:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `scanner.enabled` | Enable scanner RBAC resources | `true` |
+| `scanner.image` | Scanner image (defaults to operator image) | `""` |
+| `scanner.timeout` | Default scan timeout | `30m` |
+| `scanner.maxConcurrent` | Maximum concurrent scan jobs | `5` |
+| `scanner.ttlAfterFinished` | Job TTL after completion (seconds) | `3600` |
+| `scanner.resources.requests.cpu` | Scanner pod CPU request | `100m` |
+| `scanner.resources.requests.memory` | Scanner pod memory request | `256Mi` |
+| `scanner.resources.limits.cpu` | Scanner pod CPU limit | `1` |
+| `scanner.resources.limits.memory` | Scanner pod memory limit | `1Gi` |
+| `scanner.defaultTemplates` | Default templates to use | `[]` |
+| `scanner.defaultSeverity` | Default severity filter | `[]` |
+
 ### ServiceMonitor (Prometheus Operator)
 
 | Parameter | Description | Default |
@@ -199,6 +225,28 @@ nuclei:
   rescanAge: "24h"
 ```
 
+### With Custom Scanner Configuration
+
+```yaml
+# values.yaml
+scanner:
+  enabled: true
+  timeout: "1h"
+  maxConcurrent: 10
+  ttlAfterFinished: 7200
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  defaultSeverity:
+    - medium
+    - high
+    - critical
+```
+
 ### With Node Affinity
 
 ```yaml
@@ -213,6 +261,44 @@ affinity:
               values:
                 - amd64
                 - arm64
+```
+
+## Annotation-Based Configuration
+
+You can configure scanning behavior for individual Ingress or VirtualService resources using annotations:
+
+| Annotation | Description |
+|------------|-------------|
+| `nuclei.homelab.mortenolsen.pro/enabled` | Enable/disable scanning (`true`/`false`) |
+| `nuclei.homelab.mortenolsen.pro/templates` | Comma-separated list of template paths |
+| `nuclei.homelab.mortenolsen.pro/severity` | Comma-separated severity filter |
+| `nuclei.homelab.mortenolsen.pro/schedule` | Cron schedule for periodic scans |
+| `nuclei.homelab.mortenolsen.pro/timeout` | Scan timeout duration |
+| `nuclei.homelab.mortenolsen.pro/scanner-image` | Override scanner image |
+
+### Example Annotated Ingress
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp-ingress
+  annotations:
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    nuclei.homelab.mortenolsen.pro/severity: "medium,high,critical"
+    nuclei.homelab.mortenolsen.pro/schedule: "0 2 * * *"
+spec:
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp
+                port:
+                  number: 80
 ```
 
 ## Uninstallation

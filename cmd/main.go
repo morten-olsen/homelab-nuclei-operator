@@ -17,9 +17,14 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -27,10 +32,12 @@ import (
 
 	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -39,6 +46,7 @@ import (
 
 	nucleiv1alpha1 "github.com/mortenolsen/nuclei-operator/api/v1alpha1"
 	"github.com/mortenolsen/nuclei-operator/internal/controller"
+	"github.com/mortenolsen/nuclei-operator/internal/jobmanager"
 	"github.com/mortenolsen/nuclei-operator/internal/scanner"
 	// +kubebuilder:scaffold:imports
 )
@@ -67,6 +75,15 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+
+	// Scanner mode flags
+	var mode string
+	var scanName string
+	var scanNamespace string
+
+	flag.StringVar(&mode, "mode", "controller", "Run mode: 'controller' or 'scanner'")
+	flag.StringVar(&scanName, "scan-name", "", "Name of the NucleiScan to execute (scanner mode only)")
+	flag.StringVar(&scanNamespace, "scan-namespace", "", "Namespace of the NucleiScan (scanner mode only)")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -91,6 +108,15 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Check if running in scanner mode
+	if mode == "scanner" {
+		if err := scanner.RunScannerMode(scanName, scanNamespace); err != nil {
+			setupLog.Error(err, "Scanner mode failed")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -183,10 +209,103 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse environment variables for JobManager configuration
+	scannerImage := os.Getenv("SCANNER_IMAGE")
+	if scannerImage == "" {
+		scannerImage = jobmanager.DefaultScannerImage
+	}
+
+	scannerTimeout := 30 * time.Minute
+	if v := os.Getenv("SCANNER_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			scannerTimeout = d
+		}
+	}
+
+	maxConcurrentScans := 5
+	if v := os.Getenv("MAX_CONCURRENT_SCANS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			maxConcurrentScans = n
+		}
+	}
+
+	ttlAfterFinished := int32(3600)
+	if v := os.Getenv("JOB_TTL_AFTER_FINISHED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			ttlAfterFinished = int32(n)
+		}
+	}
+
+	scannerServiceAccount := os.Getenv("SCANNER_SERVICE_ACCOUNT")
+	if scannerServiceAccount == "" {
+		scannerServiceAccount = "nuclei-scanner"
+	}
+
+	defaultTemplates := []string{}
+	if v := os.Getenv("DEFAULT_TEMPLATES"); v != "" {
+		defaultTemplates = strings.Split(v, ",")
+	}
+
+	defaultSeverity := []string{}
+	if v := os.Getenv("DEFAULT_SEVERITY"); v != "" {
+		defaultSeverity = strings.Split(v, ",")
+	}
+
+	// Create the JobManager configuration
+	jobManagerConfig := jobmanager.Config{
+		ScannerImage:       scannerImage,
+		DefaultTimeout:     scannerTimeout,
+		TTLAfterFinished:   ttlAfterFinished,
+		BackoffLimit:       2,
+		MaxConcurrent:      maxConcurrentScans,
+		ServiceAccountName: scannerServiceAccount,
+		DefaultResources:   jobmanager.DefaultConfig().DefaultResources,
+		DefaultTemplates:   defaultTemplates,
+		DefaultSeverity:    defaultSeverity,
+	}
+
+	// Create the JobManager for scanner job management
+	jobMgr := jobmanager.NewJobManager(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		jobManagerConfig,
+	)
+
+	// Run startup recovery to handle orphaned scans from previous operator instance
+	setupLog.Info("Running startup recovery")
+	if err := runStartupRecovery(mgr.GetClient(), jobMgr); err != nil {
+		setupLog.Error(err, "Startup recovery failed")
+		// Don't exit - continue with normal operation
+	}
+
+	// Create a context that will be cancelled when the manager stops
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start periodic cleanup goroutine
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := jobMgr.CleanupOrphanedJobs(ctx); err != nil {
+					setupLog.Error(err, "Periodic cleanup failed")
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Create the NucleiScan reconciler with JobManager
 	if err := controller.NewNucleiScanReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		scanner.NewNucleiScannerWithDefaults(),
+		mgr.GetEventRecorderFor("nucleiscan-controller"),
+		jobMgr,
+		controller.DefaultReconcilerConfig(),
 	).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NucleiScan")
 		os.Exit(1)
@@ -221,4 +340,73 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// runStartupRecovery handles orphaned scans and jobs from previous operator instance
+func runStartupRecovery(c client.Client, jobMgr *jobmanager.JobManager) error {
+	ctx := context.Background()
+
+	// List all NucleiScans in Running phase
+	scanList := &nucleiv1alpha1.NucleiScanList{}
+	if err := c.List(ctx, scanList); err != nil {
+		return fmt.Errorf("failed to list NucleiScans: %w", err)
+	}
+
+	for _, scan := range scanList.Items {
+		if scan.Status.Phase != nucleiv1alpha1.ScanPhaseRunning {
+			continue
+		}
+
+		// Check if the referenced job still exists
+		if scan.Status.JobRef != nil {
+			job, err := jobMgr.GetJob(ctx, scan.Status.JobRef.Name, scan.Namespace)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					// Job is gone - reset scan to Pending
+					scan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+					scan.Status.LastError = "Recovered from operator restart - job not found"
+					scan.Status.JobRef = nil
+					if updateErr := c.Status().Update(ctx, &scan); updateErr != nil {
+						return fmt.Errorf("failed to update scan %s: %w", scan.Name, updateErr)
+					}
+					continue
+				}
+				return fmt.Errorf("failed to get job for scan %s: %w", scan.Name, err)
+			}
+
+			// Job exists - check if it's completed but status wasn't updated
+			if jobMgr.IsJobComplete(job) {
+				// The scanner pod should have updated the status
+				// If it didn't, mark as failed
+				if scan.Status.Phase == nucleiv1alpha1.ScanPhaseRunning {
+					if jobMgr.IsJobFailed(job) {
+						scan.Status.Phase = nucleiv1alpha1.ScanPhaseFailed
+						scan.Status.LastError = "Job completed during operator downtime: " + jobMgr.GetJobFailureReason(job)
+					} else {
+						// Job succeeded but status wasn't updated - this shouldn't happen
+						// but handle it gracefully
+						scan.Status.Phase = nucleiv1alpha1.ScanPhaseFailed
+						scan.Status.LastError = "Job completed during operator downtime but status was not updated"
+					}
+					if updateErr := c.Status().Update(ctx, &scan); updateErr != nil {
+						return fmt.Errorf("failed to update scan %s: %w", scan.Name, updateErr)
+					}
+				}
+			}
+		} else {
+			// No job reference but Running - invalid state
+			scan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+			scan.Status.LastError = "Recovered from invalid state - no job reference"
+			if updateErr := c.Status().Update(ctx, &scan); updateErr != nil {
+				return fmt.Errorf("failed to update scan %s: %w", scan.Name, updateErr)
+			}
+		}
+	}
+
+	// Clean up orphaned jobs
+	if err := jobMgr.CleanupOrphanedJobs(ctx); err != nil {
+		return fmt.Errorf("failed to cleanup orphaned jobs: %w", err)
+	}
+
+	return nil
 }

@@ -1,0 +1,51 @@
+{{- if .Values.scanner.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "nuclei-operator.fullname" . }}-scanner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nuclei-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nuclei-operator.fullname" . }}-scanner
+  labels:
+    {{- include "nuclei-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
+rules:
+  # Scanner needs to read NucleiScan resources
+  - apiGroups:
+      - nuclei.homelab.mortenolsen.pro
+    resources:
+      - nucleiscans
+    verbs:
+      - get
+  # Scanner needs to update NucleiScan status
+  - apiGroups:
+      - nuclei.homelab.mortenolsen.pro
+    resources:
+      - nucleiscans/status
+    verbs:
+      - get
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nuclei-operator.fullname" . }}-scanner
+  labels:
+    {{- include "nuclei-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "nuclei-operator.fullname" . }}-scanner
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "nuclei-operator.fullname" . }}-scanner
+    namespace: {{ .Release.Namespace }}
+{{- end }}

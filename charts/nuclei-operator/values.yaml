@@ -131,3 +131,35 @@ serviceMonitor:
 networkPolicy:
   # Enable network policy
   enabled: false
+
+# Scanner configuration
+scanner:
+  # Enable scanner RBAC resources
+  enabled: true
+  
+  # Scanner image (defaults to operator image)
+  image: ""
+  
+  # Default scan timeout
+  timeout: "30m"
+  
+  # Maximum concurrent scan jobs
+  maxConcurrent: 5
+  
+  # Job TTL after completion (seconds)
+  ttlAfterFinished: 3600
+  
+  # Default resource requirements for scanner pods
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  
+  # Default templates to use
+  defaultTemplates: []
+  
+  # Default severity filter
+  defaultSeverity: []

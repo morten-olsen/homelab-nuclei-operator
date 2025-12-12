@@ -39,6 +39,7 @@ import (
 
 	nucleiv1alpha1 "github.com/mortenolsen/nuclei-operator/api/v1alpha1"
 	"github.com/mortenolsen/nuclei-operator/internal/controller"
+	"github.com/mortenolsen/nuclei-operator/internal/scanner"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -183,8 +184,9 @@ func main() {
 	}
 
 	if err := (&controller.NucleiScanReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Scanner: scanner.NewNucleiScannerWithDefaults(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NucleiScan")
 		os.Exit(1)

@@ -51,6 +51,71 @@ The Nuclei Operator watches for Ingress and VirtualService resources in your Kub
 
 ## Installation
 
+### Using Helm (Recommended)
+
+The easiest way to install the Nuclei Operator is using Helm:
+
+```bash
+# Add the Helm repository
+helm repo add nuclei-operator https://morten-olsen.github.io/homelab-nuclei-operator
+helm repo update
+
+# Install the operator
+helm install nuclei-operator nuclei-operator/nuclei-operator \
+  --namespace nuclei-operator-system \
+  --create-namespace
+```
+
+#### Helm Configuration
+
+You can customize the installation by providing values:
+
+```bash
+helm install nuclei-operator nuclei-operator/nuclei-operator \
+  --namespace nuclei-operator-system \
+  --create-namespace \
+  --set replicaCount=1 \
+  --set resources.limits.memory=4Gi \
+  --set nuclei.rescanAge=72h
+```
+
+Or create a `values.yaml` file:
+
+```yaml
+replicaCount: 1
+
+resources:
+  limits:
+    cpu: "2"
+    memory: "4Gi"
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+
+nuclei:
+  timeout: "1h"
+  rescanAge: "72h"
+
+serviceMonitor:
+  enabled: true
+```
+
+```bash
+helm install nuclei-operator nuclei-operator/nuclei-operator \
+  --namespace nuclei-operator-system \
+  --create-namespace \
+  -f values.yaml
+```
+
+### Using Container Image from GitHub Container Registry
+
+The container images are available at:
+
+```
+ghcr.io/morten-olsen/homelab-nuclei-operator:latest
+ghcr.io/morten-olsen/homelab-nuclei-operator:v0.1.0  # specific version
+```
+
 ### Using kubectl/kustomize
 
 1. **Install the CRDs:**
@@ -63,7 +128,7 @@ make install
 
 ```bash
 # Using the default image
-make deploy IMG=ghcr.io/mortenolsen/nuclei-operator:latest
+make deploy IMG=ghcr.io/morten-olsen/homelab-nuclei-operator:latest
 
 # Or build and deploy your own image
 make docker-build docker-push IMG=<your-registry>/nuclei-operator:tag
@@ -72,11 +137,18 @@ make deploy IMG=<your-registry>/nuclei-operator:tag
 
 ### Using a Single YAML File
 
-Generate and apply a consolidated installation manifest:
+Download and apply the installation manifest from the GitHub release:
+
+```bash
+# Download from the latest release
+kubectl apply -f https://github.com/morten-olsen/homelab-nuclei-operator/releases/latest/download/install.yaml
+```
+
+Or generate it locally:
 
 ```bash
 # Generate the installer
-make build-installer IMG=<your-registry>/nuclei-operator:tag
+make build-installer IMG=ghcr.io/morten-olsen/homelab-nuclei-operator:latest
 
 # Apply to your cluster
 kubectl apply -f dist/install.yaml
@@ -86,8 +158,8 @@ kubectl apply -f dist/install.yaml
 
 ```bash
 # Clone the repository
-git clone https://github.com/mortenolsen/nuclei-operator.git
-cd nuclei-operator
+git clone https://github.com/morten-olsen/homelab-nuclei-operator.git
+cd homelab-nuclei-operator
 
 # Build the binary
 make build
@@ -103,8 +175,20 @@ make docker-push IMG=<your-registry>/nuclei-operator:tag
 
 ### 1. Deploy the Operator
 
+Using Helm (recommended):
+
 ```bash
-make deploy IMG=ghcr.io/mortenolsen/nuclei-operator:latest
+helm repo add nuclei-operator https://morten-olsen.github.io/homelab-nuclei-operator
+helm repo update
+helm install nuclei-operator nuclei-operator/nuclei-operator \
+  --namespace nuclei-operator-system \
+  --create-namespace
+```
+
+Or using kustomize:
+
+```bash
+make deploy IMG=ghcr.io/morten-olsen/homelab-nuclei-operator:latest
 ```
 
 ### 2. Create an Ingress Resource
@@ -370,6 +454,21 @@ curl localhost:8080/metrics
 ```
 
 ## Uninstallation
+
+### Using Helm
+
+```bash
+# Uninstall the operator
+helm uninstall nuclei-operator -n nuclei-operator-system
+
+# Remove the namespace (optional)
+kubectl delete namespace nuclei-operator-system
+
+# Remove CRDs (optional - this will delete all NucleiScan resources)
+kubectl delete crd nucleiscans.nuclei.homelab.mortenolsen.pro
+```
+
+### Using kubectl/kustomize
 
 ```bash
 # Remove all NucleiScan resources

@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nuclei-operator.fullname" . }}-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nuclei-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "nuclei-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "nuclei-operator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nuclei-operator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: manager
+        image: {{ include "nuclei-operator.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+        - /manager
+        args:
+        {{- if .Values.leaderElection.enabled }}
+        - --leader-elect
+        {{- end }}
+        - --health-probe-bind-address=:8081
+        {{- if .Values.metrics.enabled }}
+        - --metrics-bind-address=:8443
+        - --metrics-secure=true
+        {{- end }}
+        env:
+        - name: NUCLEI_BINARY_PATH
+          value: {{ .Values.nuclei.binaryPath | quote }}
+        - name: NUCLEI_TEMPLATES_PATH
+          value: {{ .Values.nuclei.templatesPath | quote }}
+        - name: NUCLEI_TIMEOUT
+          value: {{ .Values.nuclei.timeout | quote }}
+        - name: NUCLEI_RESCAN_AGE
+          value: {{ .Values.nuclei.rescanAge | quote }}
+        - name: NUCLEI_BACKOFF_INITIAL
+          value: {{ .Values.nuclei.backoff.initial | quote }}
+        - name: NUCLEI_BACKOFF_MAX
+          value: {{ .Values.nuclei.backoff.max | quote }}
+        - name: NUCLEI_BACKOFF_MULTIPLIER
+          value: {{ .Values.nuclei.backoff.multiplier | quote }}
+        ports: []
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        {{- with .Values.healthProbes.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.healthProbes.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        volumeMounts:
+        - name: nuclei-templates
+          mountPath: {{ .Values.nuclei.templatesPath }}
+          readOnly: true
+        - name: nuclei-cache
+          mountPath: /home/nonroot/.nuclei
+      volumes:
+      - name: nuclei-templates
+        emptyDir: {}
+      - name: nuclei-cache
+        emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 10

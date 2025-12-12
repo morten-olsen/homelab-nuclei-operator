@@ -1,0 +1,44 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }}
+  $ helm get all {{ .Release.Name }}
+
+The nuclei-operator is now watching for Ingress and VirtualService resources.
+
+To create a NucleiScan manually, you can apply a resource like:
+
+  apiVersion: nuclei.homelab.mortenolsen.pro/v1alpha1
+  kind: NucleiScan
+  metadata:
+    name: example-scan
+  spec:
+    sourceRef:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      name: my-ingress
+      namespace: default
+      uid: <ingress-uid>
+    targets:
+      - https://example.com
+
+To view scan results:
+
+  $ kubectl get nucleiscans -A
+  $ kubectl describe nucleiscan <scan-name>
+
+{{- if .Values.metrics.enabled }}
+
+Metrics are enabled. The metrics service is available at:
+  {{ include "nuclei-operator.fullname" . }}-metrics-service:{{ .Values.metrics.service.port }}
+
+{{- if .Values.serviceMonitor.enabled }}
+A ServiceMonitor has been created for Prometheus Operator integration.
+{{- end }}
+{{- end }}
+
+For more information, visit:
+  https://github.com/morten-olsen/homelab-nuclei-operator

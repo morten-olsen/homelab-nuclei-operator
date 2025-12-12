@@ -1,0 +1,131 @@
+name: GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Create Helm packages directory
+        run: mkdir -p _site
+
+      - name: Package Helm chart
+        run: |
+          helm package charts/nuclei-operator -d _site
+
+      - name: Generate Helm repo index
+        run: |
+          helm repo index _site --url https://morten-olsen.github.io/homelab-nuclei-operator
+
+      - name: Create index.html
+        run: |
+          cat > _site/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Nuclei Operator Helm Repository</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 2rem;
+                line-height: 1.6;
+              }
+              h1 { color: #333; }
+              code {
+                background: #f4f4f4;
+                padding: 0.2rem 0.4rem;
+                border-radius: 4px;
+                font-size: 0.9em;
+              }
+              pre {
+                background: #f4f4f4;
+                padding: 1rem;
+                border-radius: 8px;
+                overflow-x: auto;
+              }
+              pre code {
+                background: none;
+                padding: 0;
+              }
+              a { color: #0066cc; }
+            </style>
+          </head>
+          <body>
+            <h1>🔬 Nuclei Operator Helm Repository</h1>
+            <p>
+              This is the Helm chart repository for the 
+              <a href="https://github.com/morten-olsen/homelab-nuclei-operator">Nuclei Operator</a>.
+            </p>
+            
+            <h2>Usage</h2>
+            <p>Add this repository to Helm:</p>
+            <pre><code>helm repo add nuclei-operator https://morten-olsen.github.io/homelab-nuclei-operator
+          helm repo update</code></pre>
+            
+            <p>Install the chart:</p>
+            <pre><code>helm install nuclei-operator nuclei-operator/nuclei-operator \
+            --namespace nuclei-operator-system \
+            --create-namespace</code></pre>
+            
+            <h2>Available Charts</h2>
+            <ul>
+              <li><strong>nuclei-operator</strong> - A Kubernetes operator that automatically scans Ingress and VirtualService resources using Nuclei security scanner</li>
+            </ul>
+            
+            <h2>Links</h2>
+            <ul>
+              <li><a href="https://github.com/morten-olsen/homelab-nuclei-operator">GitHub Repository</a></li>
+              <li><a href="./index.yaml">Helm Repository Index</a></li>
+            </ul>
+          </body>
+          </html>
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,21 @@
+apiVersion: v2
+name: nuclei-operator
+description: A Kubernetes operator that automatically scans Ingress and VirtualService resources using Nuclei security scanner
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/morten-olsen/homelab-nuclei-operator
+sources:
+  - https://github.com/morten-olsen/homelab-nuclei-operator
+maintainers:
+  - name: Morten Olsen
+    url: https://github.com/morten-olsen
+keywords:
+  - kubernetes
+  - operator
+  - security
+  - nuclei
+  - scanner
+  - ingress
+  - virtualservice
+kubeVersion: ">=1.26.0-0"

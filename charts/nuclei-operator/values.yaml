@@ -1,0 +1,133 @@
+# Default values for nuclei-operator.
+
+# Number of replicas for the controller manager
+replicaCount: 1
+
+image:
+  # Container image repository
+  repository: ghcr.io/morten-olsen/homelab-nuclei-operator
+  # Image pull policy
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion
+  tag: ""
+
+# Image pull secrets for private registries
+imagePullSecrets: []
+
+# Override the name of the chart
+nameOverride: ""
+# Override the full name of the chart
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod labels
+podLabels: {}
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container security context
+securityContext:
+  readOnlyRootFilesystem: false  # Nuclei needs to write temporary files
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65532
+  capabilities:
+    drop:
+      - ALL
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+
+# Node selector for pod scheduling
+nodeSelector: {}
+
+# Tolerations for pod scheduling
+tolerations: []
+
+# Affinity rules for pod scheduling
+affinity: {}
+
+# Leader election configuration
+leaderElection:
+  enabled: true
+
+# Health probe configuration
+healthProbes:
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8081
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# Metrics configuration
+metrics:
+  # Enable metrics endpoint
+  enabled: true
+  # Service configuration for metrics
+  service:
+    type: ClusterIP
+    port: 8443
+
+# Nuclei scanner configuration
+nuclei:
+  # Path to nuclei binary inside the container
+  binaryPath: "/usr/local/bin/nuclei"
+  # Path to nuclei templates
+  templatesPath: "/nuclei-templates"
+  # Scan timeout duration
+  timeout: "30m"
+  # Rescan age - how old scan results can be before triggering automatic rescan
+  # Set to "0" to disable automatic rescans based on age
+  rescanAge: "168h"
+  # Backoff configuration for target availability checks
+  backoff:
+    # Initial retry interval
+    initial: "10s"
+    # Maximum retry interval
+    max: "10m"
+    # Multiplier for exponential backoff
+    multiplier: "2.0"
+
+# ServiceMonitor for Prometheus Operator
+serviceMonitor:
+  # Enable ServiceMonitor creation
+  enabled: false
+  # Additional labels for the ServiceMonitor
+  labels: {}
+  # Scrape interval
+  interval: 30s
+  # Scrape timeout
+  scrapeTimeout: 10s
+
+# Network policies
+networkPolicy:
+  # Enable network policy
+  enabled: false

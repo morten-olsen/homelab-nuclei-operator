@@ -257,8 +257,13 @@ func (r *NucleiScanReconciler) handleDeletion(ctx context.Context, nucleiScan *n
 
 		// Clean up any running scanner job
 		if nucleiScan.Status.JobRef != nil {
-			log.Info("Deleting scanner job", "job", nucleiScan.Status.JobRef.Name)
-			if err := r.JobManager.DeleteJob(ctx, nucleiScan.Status.JobRef.Name, nucleiScan.Namespace); err != nil {
+			jobNamespace := nucleiScan.Status.JobRef.Namespace
+			if jobNamespace == "" {
+				// Fallback for backwards compatibility
+				jobNamespace = nucleiScan.Namespace
+			}
+			log.Info("Deleting scanner job", "job", nucleiScan.Status.JobRef.Name, "namespace", jobNamespace)
+			if err := r.JobManager.DeleteJob(ctx, nucleiScan.Status.JobRef.Name, jobNamespace); err != nil {
 				if !apierrors.IsNotFound(err) {
 					log.Error(err, "Failed to delete scanner job", "job", nucleiScan.Status.JobRef.Name)
 				}
@@ -324,6 +329,7 @@ func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiSca
 	nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhaseRunning
 	nucleiScan.Status.JobRef = &nucleiv1alpha1.JobReference{
 		Name:      job.Name,
+		Namespace: job.Namespace,
 		UID:       string(job.UID),
 		StartTime: &now,
 	}
@@ -401,8 +407,13 @@ func (r *NucleiScanReconciler) handleRunningPhase(ctx context.Context, nucleiSca
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Get the job
-	job, err := r.JobManager.GetJob(ctx, nucleiScan.Status.JobRef.Name, nucleiScan.Namespace)
+	// Get the job - use namespace from JobRef (may be different from scan namespace)
+	jobNamespace := nucleiScan.Status.JobRef.Namespace
+	if jobNamespace == "" {
+		// Fallback for backwards compatibility
+		jobNamespace = nucleiScan.Namespace
+	}
+	job, err := r.JobManager.GetJob(ctx, nucleiScan.Status.JobRef.Name, jobNamespace)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("Scanner job not found, resetting to Pending")

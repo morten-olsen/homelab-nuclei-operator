@@ -376,6 +376,10 @@ spec:
                   name:
                     description: Name of the Job
                     type: string
+                  namespace:
+                    description: Namespace of the Job (may differ from NucleiScan
+                      namespace)
+                    type: string
                   podName:
                     description: PodName is the name of the scanner pod (for log retrieval)
                     type: string
@@ -388,6 +392,7 @@ spec:
                     type: string
                 required:
                 - name
+                - namespace
                 - uid
                 type: object
               lastError:

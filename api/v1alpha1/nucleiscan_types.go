@@ -77,6 +77,9 @@ type JobReference struct {
 	// Name of the Job
 	Name string `json:"name"`
 
+	// Namespace of the Job (may differ from NucleiScan namespace)
+	Namespace string `json:"namespace"`
+
 	// UID of the Job
 	UID string `json:"uid"`
 

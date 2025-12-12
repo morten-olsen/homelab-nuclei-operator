@@ -241,6 +241,16 @@ func main() {
 		scannerServiceAccount = "nuclei-scanner"
 	}
 
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		// Try to read from the downward API file
+		if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+			operatorNamespace = string(data)
+		} else {
+			operatorNamespace = "nuclei-operator-system"
+		}
+	}
+
 	defaultTemplates := []string{}
 	if v := os.Getenv("DEFAULT_TEMPLATES"); v != "" {
 		defaultTemplates = strings.Split(v, ",")
@@ -259,6 +269,7 @@ func main() {
 		BackoffLimit:       2,
 		MaxConcurrent:      maxConcurrentScans,
 		ServiceAccountName: scannerServiceAccount,
+		OperatorNamespace:  operatorNamespace,
 		DefaultResources:   jobmanager.DefaultConfig().DefaultResources,
 		DefaultTemplates:   defaultTemplates,
 		DefaultSeverity:    defaultSeverity,

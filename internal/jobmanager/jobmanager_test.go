@@ -43,14 +43,22 @@ func TestBuildJob(t *testing.T) {
 
 	job := manager.buildJob(scan)
 
-	// Verify job name prefix
+	// Verify job name prefix - should include scan namespace to avoid collisions
 	if len(job.Name) == 0 {
 		t.Error("Job name should not be empty")
 	}
 
-	// Verify namespace
-	if job.Namespace != "default" {
-		t.Errorf("Expected namespace 'default', got '%s'", job.Namespace)
+	// Verify namespace - job should be created in operator namespace
+	if job.Namespace != config.OperatorNamespace {
+		t.Errorf("Expected namespace '%s', got '%s'", config.OperatorNamespace, job.Namespace)
+	}
+
+	// Verify scan labels are set correctly for cross-namespace tracking
+	if job.Labels[LabelScanName] != scan.Name {
+		t.Errorf("Expected scan name label '%s', got '%s'", scan.Name, job.Labels[LabelScanName])
+	}
+	if job.Labels[LabelScanNamespace] != scan.Namespace {
+		t.Errorf("Expected scan namespace label '%s', got '%s'", scan.Namespace, job.Labels[LabelScanNamespace])
 	}
 
 	// Verify labels
@@ -113,5 +121,31 @@ func TestBuildJobWithCustomConfig(t *testing.T) {
 	expectedDeadline := int64(45 * 60) // 45 minutes in seconds
 	if *job.Spec.ActiveDeadlineSeconds != expectedDeadline {
 		t.Errorf("Expected deadline %d, got %d", expectedDeadline, *job.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+func TestBuildJobInSameNamespace(t *testing.T) {
+	config := DefaultConfig()
+	// Clear operator namespace to test same-namespace behavior
+	config.OperatorNamespace = ""
+	manager := &JobManager{
+		Config: config,
+	}
+
+	scan := &nucleiv1alpha1.NucleiScan{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-scan",
+			Namespace: "my-namespace",
+		},
+		Spec: nucleiv1alpha1.NucleiScanSpec{
+			Targets: []string{"https://example.com"},
+		},
+	}
+
+	job := manager.buildJob(scan)
+
+	// Verify namespace - when operator namespace is empty, job should be in scan's namespace
+	if job.Namespace != scan.Namespace {
+		t.Errorf("Expected namespace '%s', got '%s'", scan.Namespace, job.Namespace)
 	}
 }

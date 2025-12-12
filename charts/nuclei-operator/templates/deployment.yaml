@@ -70,6 +70,8 @@ spec:
           value: {{ .Values.scanner.ttlAfterFinished | quote }}
         - name: SCANNER_SERVICE_ACCOUNT
           value: {{ include "nuclei-operator.fullname" . }}-scanner
+        - name: OPERATOR_NAMESPACE
+          value: {{ .Release.Namespace | quote }}
         {{- if .Values.scanner.defaultTemplates }}
         - name: DEFAULT_TEMPLATES
           value: {{ join "," .Values.scanner.defaultTemplates | quote }}

@@ -82,6 +82,9 @@ type Config struct {
 	// ServiceAccountName is the service account to use for scanner pods
 	ServiceAccountName string
 
+	// OperatorNamespace is the namespace where the operator runs and where scanner jobs will be created
+	OperatorNamespace string
+
 	// DefaultResources are the default resource requirements for scanner pods
 	DefaultResources corev1.ResourceRequirements
 
@@ -101,6 +104,7 @@ func DefaultConfig() Config {
 		BackoffLimit:       DefaultBackoffLimit,
 		MaxConcurrent:      5,
 		ServiceAccountName: "nuclei-scanner",
+		OperatorNamespace:  "nuclei-operator-system",
 		DefaultResources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -136,14 +140,22 @@ func (m *JobManager) CreateScanJob(ctx context.Context, scan *nucleiv1alpha1.Nuc
 
 	job := m.buildJob(scan)
 
-	// Set owner reference so the job is garbage collected when the scan is deleted
-	if err := controllerutil.SetControllerReference(scan, job, m.Scheme); err != nil {
-		return nil, fmt.Errorf("failed to set controller reference: %w", err)
+	// Only set owner reference if the job is in the same namespace as the scan
+	// Cross-namespace owner references are not allowed in Kubernetes
+	if job.Namespace == scan.Namespace {
+		if err := controllerutil.SetControllerReference(scan, job, m.Scheme); err != nil {
+			return nil, fmt.Errorf("failed to set controller reference: %w", err)
+		}
 	}
+	// When job is in a different namespace (operator namespace), we rely on:
+	// 1. TTLSecondsAfterFinished for automatic cleanup of completed jobs
+	// 2. Labels (LabelScanName, LabelScanNamespace) to track which scan the job belongs to
+	// 3. CleanupOrphanedJobs to clean up jobs whose scans no longer exist
 
 	logger.Info("Creating scanner job",
 		"job", job.Name,
-		"namespace", job.Namespace,
+		"jobNamespace", job.Namespace,
+		"scanNamespace", scan.Namespace,
 		"image", job.Spec.Template.Spec.Containers[0].Image,
 		"targets", len(scan.Spec.Targets))
 
@@ -277,14 +289,41 @@ func (m *JobManager) CleanupOrphanedJobs(ctx context.Context) error {
 	}
 
 	for _, job := range jobList.Items {
-		// Check if owner reference exists and the owner still exists
-		ownerRef := metav1.GetControllerOf(&job)
-		if ownerRef == nil {
-			logger.Info("Deleting orphaned job without owner", "job", job.Name, "namespace", job.Namespace)
-			if err := m.DeleteJob(ctx, job.Name, job.Namespace); err != nil && !apierrors.IsNotFound(err) {
-				logger.Error(err, "Failed to delete orphaned job", "job", job.Name)
+		// Check if the associated NucleiScan still exists using labels
+		scanName := job.Labels[LabelScanName]
+		scanNamespace := job.Labels[LabelScanNamespace]
+
+		if scanName != "" && scanNamespace != "" {
+			// Try to get the associated NucleiScan
+			scan := &nucleiv1alpha1.NucleiScan{}
+			err := m.Get(ctx, types.NamespacedName{Name: scanName, Namespace: scanNamespace}, scan)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					// The scan no longer exists - delete the job
+					logger.Info("Deleting orphaned job (scan not found)",
+						"job", job.Name,
+						"namespace", job.Namespace,
+						"scanName", scanName,
+						"scanNamespace", scanNamespace)
+					if err := m.DeleteJob(ctx, job.Name, job.Namespace); err != nil && !apierrors.IsNotFound(err) {
+						logger.Error(err, "Failed to delete orphaned job", "job", job.Name)
+					}
+					continue
+				}
+				// Other error - log and continue
+				logger.Error(err, "Failed to check if scan exists", "scanName", scanName, "scanNamespace", scanNamespace)
+				continue
 			}
-			continue
+		} else {
+			// Job doesn't have proper labels - check owner reference as fallback
+			ownerRef := metav1.GetControllerOf(&job)
+			if ownerRef == nil {
+				logger.Info("Deleting orphaned job without owner or labels", "job", job.Name, "namespace", job.Namespace)
+				if err := m.DeleteJob(ctx, job.Name, job.Namespace); err != nil && !apierrors.IsNotFound(err) {
+					logger.Error(err, "Failed to delete orphaned job", "job", job.Name)
+				}
+				continue
+			}
 		}
 
 		// Check if the job is stuck (running longer than 2x the timeout)
@@ -305,10 +344,16 @@ func (m *JobManager) CleanupOrphanedJobs(ctx context.Context) error {
 
 // buildJob creates a Job specification for the given NucleiScan
 func (m *JobManager) buildJob(scan *nucleiv1alpha1.NucleiScan) *batchv1.Job {
-	// Generate a unique job name
-	jobName := fmt.Sprintf("nucleiscan-%s-%d", scan.Name, time.Now().Unix())
+	// Generate a unique job name that includes the scan namespace to avoid collisions
+	jobName := fmt.Sprintf("nucleiscan-%s-%s-%d", scan.Namespace, scan.Name, time.Now().Unix())
 	if len(jobName) > 63 {
 		jobName = jobName[:63]
+	}
+
+	// Determine the namespace for the job - use operator namespace if configured
+	jobNamespace := m.Config.OperatorNamespace
+	if jobNamespace == "" {
+		jobNamespace = scan.Namespace
 	}
 
 	// Determine the scanner image
@@ -360,7 +405,7 @@ func (m *JobManager) buildJob(scan *nucleiv1alpha1.NucleiScan) *batchv1.Job {
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
-			Namespace: scan.Namespace,
+			Namespace: jobNamespace,
 			Labels:    labels,
 		},
 		Spec: batchv1.JobSpec{

@@ -23,16 +23,20 @@ import (
 	"os"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	nucleiv1alpha1 "github.com/mortenolsen/nuclei-operator/api/v1alpha1"
-	"github.com/mortenolsen/nuclei-operator/internal/scanner"
+	"github.com/mortenolsen/nuclei-operator/internal/jobmanager"
 )
 
 const (
@@ -74,65 +78,77 @@ const (
 	ReasonScanSuspended = "ScanSuspended"
 )
 
-// BackoffConfig holds configuration for exponential backoff
-type BackoffConfig struct {
-	Initial    time.Duration
-	Max        time.Duration
-	Multiplier float64
+// ReconcilerConfig holds configuration for the NucleiScanReconciler
+type ReconcilerConfig struct {
+	RescanAge         time.Duration
+	BackoffInitial    time.Duration
+	BackoffMax        time.Duration
+	BackoffMultiplier float64
+}
+
+// DefaultReconcilerConfig returns a ReconcilerConfig with default values
+func DefaultReconcilerConfig() ReconcilerConfig {
+	config := ReconcilerConfig{
+		RescanAge:         defaultRescanAge,
+		BackoffInitial:    defaultBackoffInitial,
+		BackoffMax:        defaultBackoffMax,
+		BackoffMultiplier: defaultBackoffMultiplier,
+	}
+
+	// Override from environment variables
+	if envVal := os.Getenv(envRescanAge); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			config.RescanAge = parsed
+		}
+	}
+
+	if envVal := os.Getenv(envBackoffInitial); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			config.BackoffInitial = parsed
+		}
+	}
+
+	if envVal := os.Getenv(envBackoffMax); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			config.BackoffMax = parsed
+		}
+	}
+
+	if envVal := os.Getenv(envBackoffMultiplier); envVal != "" {
+		if parsed, err := parseFloat(envVal); err == nil && parsed > 0 {
+			config.BackoffMultiplier = parsed
+		}
+	}
+
+	return config
 }
 
 // NucleiScanReconciler reconciles a NucleiScan object
 type NucleiScanReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
-	Scanner    scanner.Scanner
-	RescanAge  time.Duration
+	Recorder   record.EventRecorder
+	JobManager *jobmanager.JobManager
+	Config     ReconcilerConfig
 	HTTPClient *http.Client
-	Backoff    BackoffConfig
 }
 
-// NewNucleiScanReconciler creates a new NucleiScanReconciler with default settings
-func NewNucleiScanReconciler(c client.Client, scheme *runtime.Scheme, s scanner.Scanner) *NucleiScanReconciler {
-	rescanAge := defaultRescanAge
-	if envVal := os.Getenv(envRescanAge); envVal != "" {
-		if parsed, err := time.ParseDuration(envVal); err == nil {
-			rescanAge = parsed
-		}
-	}
-
-	backoffInitial := defaultBackoffInitial
-	if envVal := os.Getenv(envBackoffInitial); envVal != "" {
-		if parsed, err := time.ParseDuration(envVal); err == nil {
-			backoffInitial = parsed
-		}
-	}
-
-	backoffMax := defaultBackoffMax
-	if envVal := os.Getenv(envBackoffMax); envVal != "" {
-		if parsed, err := time.ParseDuration(envVal); err == nil {
-			backoffMax = parsed
-		}
-	}
-
-	backoffMultiplier := defaultBackoffMultiplier
-	if envVal := os.Getenv(envBackoffMultiplier); envVal != "" {
-		if parsed, err := parseFloat(envVal); err == nil && parsed > 0 {
-			backoffMultiplier = parsed
-		}
-	}
-
+// NewNucleiScanReconciler creates a new NucleiScanReconciler with the given configuration
+func NewNucleiScanReconciler(
+	c client.Client,
+	scheme *runtime.Scheme,
+	recorder record.EventRecorder,
+	jobManager *jobmanager.JobManager,
+	config ReconcilerConfig,
+) *NucleiScanReconciler {
 	return &NucleiScanReconciler{
-		Client:    c,
-		Scheme:    scheme,
-		Scanner:   s,
-		RescanAge: rescanAge,
+		Client:     c,
+		Scheme:     scheme,
+		Recorder:   recorder,
+		JobManager: jobManager,
+		Config:     config,
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Second,
-		},
-		Backoff: BackoffConfig{
-			Initial:    backoffInitial,
-			Max:        backoffMax,
-			Multiplier: backoffMultiplier,
 		},
 	}
 }
@@ -147,15 +163,15 @@ func parseFloat(s string) (float64, error) {
 // calculateBackoff calculates the next backoff duration based on retry count
 func (r *NucleiScanReconciler) calculateBackoff(retryCount int) time.Duration {
 	if retryCount <= 0 {
-		return r.Backoff.Initial
+		return r.Config.BackoffInitial
 	}
 
 	// Calculate exponential backoff: initial * multiplier^retryCount
-	backoff := float64(r.Backoff.Initial)
+	backoff := float64(r.Config.BackoffInitial)
 	for i := 0; i < retryCount; i++ {
-		backoff *= r.Backoff.Multiplier
-		if backoff > float64(r.Backoff.Max) {
-			return r.Backoff.Max
+		backoff *= r.Config.BackoffMultiplier
+		if backoff > float64(r.Config.BackoffMax) {
+			return r.Config.BackoffMax
 		}
 	}
 
@@ -166,6 +182,8 @@ func (r *NucleiScanReconciler) calculateBackoff(retryCount int) time.Duration {
 // +kubebuilder:rbac:groups=nuclei.homelab.mortenolsen.pro,resources=nucleiscans/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=nuclei.homelab.mortenolsen.pro,resources=nucleiscans/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -215,15 +233,7 @@ func (r *NucleiScanReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	case nucleiv1alpha1.ScanPhasePending:
 		return r.handlePendingPhase(ctx, nucleiScan)
 	case nucleiv1alpha1.ScanPhaseRunning:
-		// Running phase on startup means the scan was interrupted (operator restart)
-		// Reset to Pending to re-run the scan
-		log.Info("Found stale Running scan, resetting to Pending (operator likely restarted)")
-		nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
-		nucleiScan.Status.LastError = "Scan was interrupted due to operator restart, re-queuing"
-		if err := r.Status().Update(ctx, nucleiScan); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+		return r.handleRunningPhase(ctx, nucleiScan)
 	case nucleiv1alpha1.ScanPhaseCompleted:
 		return r.handleCompletedPhase(ctx, nucleiScan)
 	case nucleiv1alpha1.ScanPhaseFailed:
@@ -245,8 +255,15 @@ func (r *NucleiScanReconciler) handleDeletion(ctx context.Context, nucleiScan *n
 	if controllerutil.ContainsFinalizer(nucleiScan, finalizerName) {
 		log.Info("Handling deletion, performing cleanup", "name", nucleiScan.Name, "namespace", nucleiScan.Namespace)
 
-		// Perform any cleanup here (e.g., cancel running scans)
-		// In our synchronous implementation, there's nothing to clean up
+		// Clean up any running scanner job
+		if nucleiScan.Status.JobRef != nil {
+			log.Info("Deleting scanner job", "job", nucleiScan.Status.JobRef.Name)
+			if err := r.JobManager.DeleteJob(ctx, nucleiScan.Status.JobRef.Name, nucleiScan.Namespace); err != nil {
+				if !apierrors.IsNotFound(err) {
+					log.Error(err, "Failed to delete scanner job", "job", nucleiScan.Status.JobRef.Name)
+				}
+			}
+		}
 
 		// Remove finalizer
 		log.Info("Removing finalizer", "finalizer", finalizerName)
@@ -261,56 +278,55 @@ func (r *NucleiScanReconciler) handleDeletion(ctx context.Context, nucleiScan *n
 	return ctrl.Result{}, nil
 }
 
-// handlePendingPhase handles the Pending phase - starts a new scan
+// handlePendingPhase handles the Pending phase - creates a scanner job
 func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Preparing to scan", "targets", len(nucleiScan.Spec.Targets))
+	logger := logf.FromContext(ctx)
+	logger.Info("Preparing to scan", "targets", len(nucleiScan.Spec.Targets))
+
+	// Check if we're at capacity
+	atCapacity, err := r.JobManager.AtCapacity(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to check job capacity")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	if atCapacity {
+		logger.Info("At maximum concurrent scans, requeuing")
+		r.Recorder.Event(nucleiScan, corev1.EventTypeNormal, "AtCapacity",
+			"Maximum concurrent scans reached, waiting for capacity")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 
 	// Check if at least one target is available before scanning
 	availableTargets, unavailableTargets := r.checkTargetsAvailability(ctx, nucleiScan.Spec.Targets)
 	if len(availableTargets) == 0 {
-		// Calculate backoff based on retry count
-		retryCount := nucleiScan.Status.RetryCount
-		backoffDuration := r.calculateBackoff(retryCount)
-
-		log.Info("No targets are available yet, waiting with backoff...",
-			"unavailable", len(unavailableTargets),
-			"retryCount", retryCount,
-			"backoffDuration", backoffDuration)
-
-		// Update condition and retry count
-		now := metav1.Now()
-		meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
-			Type:               ConditionTypeReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "WaitingForTargets",
-			Message:            fmt.Sprintf("Waiting for targets to become available (%d unavailable, retry #%d, next check in %v)", len(unavailableTargets), retryCount+1, backoffDuration),
-			LastTransitionTime: now,
-		})
-		nucleiScan.Status.LastError = fmt.Sprintf("Targets not available: %v", unavailableTargets)
-		nucleiScan.Status.RetryCount = retryCount + 1
-		nucleiScan.Status.LastRetryTime = &now
-
-		if err := r.Status().Update(ctx, nucleiScan); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Requeue with exponential backoff
-		return ctrl.Result{RequeueAfter: backoffDuration}, nil
+		return r.handleTargetsUnavailable(ctx, nucleiScan, unavailableTargets)
 	}
 
 	// Reset retry count since targets are now available
 	if nucleiScan.Status.RetryCount > 0 {
-		log.Info("Targets now available, resetting retry count", "previousRetries", nucleiScan.Status.RetryCount)
+		logger.Info("Targets now available, resetting retry count", "previousRetries", nucleiScan.Status.RetryCount)
 		nucleiScan.Status.RetryCount = 0
 		nucleiScan.Status.LastRetryTime = nil
 	}
 
-	log.Info("Starting scan", "availableTargets", len(availableTargets), "unavailableTargets", len(unavailableTargets))
+	logger.Info("Creating scanner job", "availableTargets", len(availableTargets), "unavailableTargets", len(unavailableTargets))
 
-	// Update status to Running
+	// Create the scanner job
+	job, err := r.JobManager.CreateScanJob(ctx, nucleiScan)
+	if err != nil {
+		logger.Error(err, "Failed to create scanner job")
+		r.Recorder.Event(nucleiScan, corev1.EventTypeWarning, "JobCreationFailed", err.Error())
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	// Update status to Running with job reference
 	now := metav1.Now()
 	nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhaseRunning
+	nucleiScan.Status.JobRef = &nucleiv1alpha1.JobReference{
+		Name:      job.Name,
+		UID:       string(job.UID),
+		StartTime: &now,
+	}
 	nucleiScan.Status.LastScanTime = &now
 	nucleiScan.Status.LastError = ""
 	nucleiScan.Status.ObservedGeneration = nucleiScan.Generation
@@ -320,30 +336,150 @@ func (r *NucleiScanReconciler) handlePendingPhase(ctx context.Context, nucleiSca
 		Type:               ConditionTypeScanActive,
 		Status:             metav1.ConditionTrue,
 		Reason:             ReasonScanRunning,
-		Message:            fmt.Sprintf("Scan is in progress (%d targets)", len(availableTargets)),
+		Message:            fmt.Sprintf("Scanner job %s created for %d targets", job.Name, len(nucleiScan.Spec.Targets)),
 		LastTransitionTime: now,
 	})
+
+	if err := r.Status().Update(ctx, nucleiScan); err != nil {
+		logger.Error(err, "Failed to update status")
+		return ctrl.Result{}, err
+	}
+
+	r.Recorder.Event(nucleiScan, corev1.EventTypeNormal, "ScanJobCreated",
+		fmt.Sprintf("Created scanner job %s", job.Name))
+
+	// Requeue to monitor job status
+	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+}
+
+// handleTargetsUnavailable handles the case when no targets are available
+func (r *NucleiScanReconciler) handleTargetsUnavailable(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan, unavailableTargets []string) (ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	// Calculate backoff based on retry count
+	retryCount := nucleiScan.Status.RetryCount
+	backoffDuration := r.calculateBackoff(retryCount)
+
+	logger.Info("No targets are available yet, waiting with backoff...",
+		"unavailable", len(unavailableTargets),
+		"retryCount", retryCount,
+		"backoffDuration", backoffDuration)
+
+	// Update condition and retry count
+	now := metav1.Now()
+	meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
+		Type:               ConditionTypeReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "WaitingForTargets",
+		Message:            fmt.Sprintf("Waiting for targets to become available (%d unavailable, retry #%d, next check in %v)", len(unavailableTargets), retryCount+1, backoffDuration),
+		LastTransitionTime: now,
+	})
+	nucleiScan.Status.LastError = fmt.Sprintf("Targets not available: %v", unavailableTargets)
+	nucleiScan.Status.RetryCount = retryCount + 1
+	nucleiScan.Status.LastRetryTime = &now
 
 	if err := r.Status().Update(ctx, nucleiScan); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Build scan options
-	options := scanner.ScanOptions{
-		Templates: nucleiScan.Spec.Templates,
-		Severity:  nucleiScan.Spec.Severity,
-		Timeout:   30 * time.Minute, // Default timeout
+	// Requeue with exponential backoff
+	return ctrl.Result{RequeueAfter: backoffDuration}, nil
+}
+
+// handleRunningPhase handles the Running phase - monitors the scanner job
+func (r *NucleiScanReconciler) handleRunningPhase(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan) (ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	// Check if we have a job reference
+	if nucleiScan.Status.JobRef == nil {
+		logger.Info("No job reference found, resetting to Pending")
+		nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+		nucleiScan.Status.LastError = "No job reference found, re-queuing scan"
+		if err := r.Status().Update(ctx, nucleiScan); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Execute the scan with available targets only
-	result, err := r.Scanner.Scan(ctx, availableTargets, options)
+	// Get the job
+	job, err := r.JobManager.GetJob(ctx, nucleiScan.Status.JobRef.Name, nucleiScan.Namespace)
 	if err != nil {
-		log.Error(err, "Scan failed")
-		return r.handleScanError(ctx, nucleiScan, err)
+		if apierrors.IsNotFound(err) {
+			logger.Info("Scanner job not found, resetting to Pending")
+			nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+			nucleiScan.Status.LastError = "Scanner job not found, re-queuing scan"
+			nucleiScan.Status.JobRef = nil
+			if err := r.Status().Update(ctx, nucleiScan); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
-	// Update status with results
-	return r.handleScanSuccess(ctx, nucleiScan, result)
+	// Update pod name if available
+	if nucleiScan.Status.JobRef.PodName == "" {
+		podName, _ := r.JobManager.GetJobPodName(ctx, job)
+		if podName != "" {
+			nucleiScan.Status.JobRef.PodName = podName
+			if err := r.Status().Update(ctx, nucleiScan); err != nil {
+				logger.Error(err, "Failed to update pod name")
+			}
+		}
+	}
+
+	// Check job status - the scanner pod updates the NucleiScan status directly
+	// We just need to detect completion/failure for events
+	if r.JobManager.IsJobSuccessful(job) {
+		logger.Info("Scanner job completed successfully")
+		r.Recorder.Event(nucleiScan, corev1.EventTypeNormal, "ScanCompleted",
+			fmt.Sprintf("Scan completed with %d findings", len(nucleiScan.Status.Findings)))
+
+		// Status is already updated by the scanner pod
+		// Just schedule next scan if needed
+		return r.scheduleNextScan(ctx, nucleiScan)
+	}
+
+	if r.JobManager.IsJobFailed(job) {
+		reason := r.JobManager.GetJobFailureReason(job)
+		logger.Info("Scanner job failed", "reason", reason)
+
+		// Update status if not already updated by scanner
+		if nucleiScan.Status.Phase != nucleiv1alpha1.ScanPhaseFailed {
+			now := metav1.Now()
+			nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhaseFailed
+			nucleiScan.Status.LastError = reason
+			nucleiScan.Status.CompletionTime = &now
+
+			// Set conditions
+			meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
+				Type:               ConditionTypeScanActive,
+				Status:             metav1.ConditionFalse,
+				Reason:             ReasonScanFailed,
+				Message:            reason,
+				LastTransitionTime: now,
+			})
+
+			meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
+				Type:               ConditionTypeReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             ReasonScanFailed,
+				Message:            reason,
+				LastTransitionTime: now,
+			})
+
+			if err := r.Status().Update(ctx, nucleiScan); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
+		r.Recorder.Event(nucleiScan, corev1.EventTypeWarning, "ScanFailed", reason)
+		return ctrl.Result{}, nil
+	}
+
+	// Job still running, requeue to check again
+	logger.V(1).Info("Scanner job still running", "job", job.Name)
+	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
 
 // checkTargetsAvailability checks which targets are reachable
@@ -373,80 +509,6 @@ func (r *NucleiScanReconciler) checkTargetsAvailability(ctx context.Context, tar
 	return available, unavailable
 }
 
-// handleScanSuccess updates the status after a successful scan
-func (r *NucleiScanReconciler) handleScanSuccess(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan, result *scanner.ScanResult) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Scan completed successfully", "findings", len(result.Findings), "duration", result.Duration)
-
-	now := metav1.Now()
-	nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhaseCompleted
-	nucleiScan.Status.CompletionTime = &now
-	nucleiScan.Status.Findings = result.Findings
-	nucleiScan.Status.Summary = &result.Summary
-	nucleiScan.Status.LastError = ""
-
-	// Set conditions
-	meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
-		Type:               ConditionTypeScanActive,
-		Status:             metav1.ConditionFalse,
-		Reason:             ReasonScanCompleted,
-		Message:            "Scan completed successfully",
-		LastTransitionTime: now,
-	})
-
-	message := fmt.Sprintf("Scan completed with %d findings", len(result.Findings))
-	meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             ReasonScanCompleted,
-		Message:            message,
-		LastTransitionTime: now,
-	})
-
-	if err := r.Status().Update(ctx, nucleiScan); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// If there's a schedule, calculate next scan time
-	if nucleiScan.Spec.Schedule != "" {
-		return r.scheduleNextScan(ctx, nucleiScan)
-	}
-
-	return ctrl.Result{}, nil
-}
-
-// handleScanError updates the status after a failed scan
-func (r *NucleiScanReconciler) handleScanError(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan, scanErr error) (ctrl.Result, error) {
-	now := metav1.Now()
-	nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhaseFailed
-	nucleiScan.Status.CompletionTime = &now
-	nucleiScan.Status.LastError = scanErr.Error()
-
-	// Set conditions
-	meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
-		Type:               ConditionTypeScanActive,
-		Status:             metav1.ConditionFalse,
-		Reason:             ReasonScanFailed,
-		Message:            scanErr.Error(),
-		LastTransitionTime: now,
-	})
-
-	meta.SetStatusCondition(&nucleiScan.Status.Conditions, metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             ReasonScanFailed,
-		Message:            scanErr.Error(),
-		LastTransitionTime: now,
-	})
-
-	if err := r.Status().Update(ctx, nucleiScan); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Requeue with backoff for retry
-	return ctrl.Result{RequeueAfter: defaultErrorRequeueAfter}, nil
-}
-
 // handleCompletedPhase handles the Completed phase - checks for scheduled rescans
 func (r *NucleiScanReconciler) handleCompletedPhase(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -455,6 +517,7 @@ func (r *NucleiScanReconciler) handleCompletedPhase(ctx context.Context, nucleiS
 	if nucleiScan.Generation != nucleiScan.Status.ObservedGeneration {
 		log.Info("Spec changed, triggering new scan")
 		nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+		nucleiScan.Status.JobRef = nil // Clear old job reference
 		if err := r.Status().Update(ctx, nucleiScan); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -469,9 +532,10 @@ func (r *NucleiScanReconciler) handleCompletedPhase(ctx context.Context, nucleiS
 	// Check if scan results are stale (older than RescanAge)
 	if nucleiScan.Status.CompletionTime != nil {
 		age := time.Since(nucleiScan.Status.CompletionTime.Time)
-		if age > r.RescanAge {
-			log.Info("Scan results are stale, triggering rescan", "age", age, "maxAge", r.RescanAge)
+		if age > r.Config.RescanAge {
+			log.Info("Scan results are stale, triggering rescan", "age", age, "maxAge", r.Config.RescanAge)
 			nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+			nucleiScan.Status.JobRef = nil // Clear old job reference
 			nucleiScan.Status.LastError = fmt.Sprintf("Automatic rescan triggered (results were %v old)", age.Round(time.Hour))
 			if err := r.Status().Update(ctx, nucleiScan); err != nil {
 				return ctrl.Result{}, err
@@ -480,7 +544,7 @@ func (r *NucleiScanReconciler) handleCompletedPhase(ctx context.Context, nucleiS
 		}
 
 		// Schedule a requeue for when the results will become stale
-		timeUntilStale := r.RescanAge - age
+		timeUntilStale := r.Config.RescanAge - age
 		log.V(1).Info("Scan results still fresh, will check again later", "timeUntilStale", timeUntilStale)
 		return ctrl.Result{RequeueAfter: timeUntilStale}, nil
 	}
@@ -496,6 +560,7 @@ func (r *NucleiScanReconciler) handleFailedPhase(ctx context.Context, nucleiScan
 	if nucleiScan.Generation != nucleiScan.Status.ObservedGeneration {
 		log.Info("Spec changed, triggering new scan")
 		nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
+		nucleiScan.Status.JobRef = nil // Clear old job reference
 		if err := r.Status().Update(ctx, nucleiScan); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -511,6 +576,11 @@ func (r *NucleiScanReconciler) handleFailedPhase(ctx context.Context, nucleiScan
 // scheduleNextScan calculates and sets the next scheduled scan time
 func (r *NucleiScanReconciler) scheduleNextScan(ctx context.Context, nucleiScan *nucleiv1alpha1.NucleiScan) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
+	// If there's no schedule, nothing to do
+	if nucleiScan.Spec.Schedule == "" {
+		return ctrl.Result{}, nil
+	}
 
 	// Parse cron schedule
 	nextTime, err := getNextScheduleTime(nucleiScan.Spec.Schedule, time.Now())
@@ -550,6 +620,7 @@ func (r *NucleiScanReconciler) checkScheduledScan(ctx context.Context, nucleiSca
 		log.Info("Scheduled scan time reached, triggering scan")
 		nucleiScan.Status.Phase = nucleiv1alpha1.ScanPhasePending
 		nucleiScan.Status.NextScheduledTime = nil
+		nucleiScan.Status.JobRef = nil // Clear old job reference
 		if err := r.Status().Update(ctx, nucleiScan); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -602,6 +673,7 @@ func getNextScheduleTime(schedule string, from time.Time) (time.Time, error) {
 func (r *NucleiScanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&nucleiv1alpha1.NucleiScan{}).
+		Owns(&batchv1.Job{}). // Watch Jobs owned by NucleiScan
 		Named("nucleiscan").
 		Complete(r)
 }

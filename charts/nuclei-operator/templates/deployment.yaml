@@ -60,6 +60,24 @@ spec:
           value: {{ .Values.nuclei.backoff.max | quote }}
         - name: NUCLEI_BACKOFF_MULTIPLIER
           value: {{ .Values.nuclei.backoff.multiplier | quote }}
+        - name: SCANNER_IMAGE
+          value: {{ .Values.scanner.image | default (printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion)) | quote }}
+        - name: SCANNER_TIMEOUT
+          value: {{ .Values.scanner.timeout | quote }}
+        - name: MAX_CONCURRENT_SCANS
+          value: {{ .Values.scanner.maxConcurrent | quote }}
+        - name: JOB_TTL_AFTER_FINISHED
+          value: {{ .Values.scanner.ttlAfterFinished | quote }}
+        - name: SCANNER_SERVICE_ACCOUNT
+          value: {{ include "nuclei-operator.fullname" . }}-scanner
+        {{- if .Values.scanner.defaultTemplates }}
+        - name: DEFAULT_TEMPLATES
+          value: {{ join "," .Values.scanner.defaultTemplates | quote }}
+        {{- end }}
+        {{- if .Values.scanner.defaultSeverity }}
+        - name: DEFAULT_SEVERITY
+          value: {{ join "," .Values.scanner.defaultSeverity | quote }}
+        {{- end }}
         ports: []
         securityContext:
           {{- toYaml .Values.securityContext | nindent 10 }}

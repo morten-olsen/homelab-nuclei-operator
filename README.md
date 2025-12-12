@@ -11,6 +11,8 @@ The Nuclei Operator watches for Ingress and VirtualService resources in your Kub
 
 ### Key Features
 
+- **Pod-based Scanning Architecture**: Each scan runs in an isolated Kubernetes Job for better scalability and reliability
+- **Annotation-based Configuration**: Configure scanning behavior per-resource using annotations on Ingress/VirtualService
 - **Automatic Discovery**: Watches Kubernetes Ingress and Istio VirtualService resources for new endpoints
 - **Automated Scanning**: Automatically creates and runs Nuclei scans when new endpoints are discovered
 - **Scheduled Scans**: Support for cron-based scheduled rescanning
@@ -31,15 +33,15 @@ The Nuclei Operator watches for Ingress and VirtualService resources in your Kub
                                 │                        │
                                 ▼                        ▼
                         ┌─────────────────┐     ┌─────────────────┐
-                        │  Nuclei Engine  │────▶│  Scan Results   │
-                        │    (Scanner)    │     │   (Findings)    │
+                        │  Scanner Job    │────▶│  Scan Results   │
+                        │  (Isolated Pod) │     │   (Findings)    │
                         └─────────────────┘     └─────────────────┘
 ```
 
 1. **Watch**: The operator watches for Ingress and VirtualService resources
-2. **Extract**: URLs are extracted from the resource specifications
+2. **Extract**: URLs are extracted from the resource specifications (annotations configure behavior)
 3. **Create**: A NucleiScan custom resource is created with the target URLs
-4. **Scan**: The Nuclei scanner executes security scans against the targets
+4. **Scan**: A Kubernetes Job is created to run the Nuclei scan in an isolated pod
 5. **Store**: Results are stored in the NucleiScan status for easy access
 
 ## Prerequisites
@@ -199,6 +201,11 @@ kind: Ingress
 metadata:
   name: my-app-ingress
   namespace: default
+  annotations:
+    # Optional: Configure scanning behavior via annotations
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    nuclei.homelab.mortenolsen.pro/severity: "medium,high,critical"
+    nuclei.homelab.mortenolsen.pro/schedule: "0 2 * * *"
 spec:
   tls:
     - hosts:
@@ -484,8 +491,9 @@ make uninstall
 ## Documentation
 
 - [Architecture](ARCHITECTURE.md) - Detailed architecture documentation
+- [Design Document](DESIGN.md) - Pod-based scanning architecture design
 - [API Reference](docs/api.md) - Complete CRD API reference
-- [User Guide](docs/user-guide.md) - Detailed usage instructions
+- [User Guide](docs/user-guide.md) - Detailed usage instructions (includes annotation reference)
 - [Contributing](CONTRIBUTING.md) - Contribution guidelines
 
 ## Contributing

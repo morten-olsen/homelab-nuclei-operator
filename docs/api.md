@@ -10,6 +10,8 @@ This document provides a complete reference for the Nuclei Operator Custom Resou
   - [Status](#status)
 - [Type Definitions](#type-definitions)
   - [SourceReference](#sourcereference)
+  - [ScannerConfig](#scannerconfig)
+  - [JobReference](#jobreference)
   - [Finding](#finding)
   - [ScanSummary](#scansummary)
   - [ScanPhase](#scanphase)
@@ -62,6 +64,16 @@ spec:
     - critical
   schedule: "@every 24h"
   suspend: false
+  scannerConfig:
+    image: "custom-scanner:latest"
+    timeout: "1h"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
 ```
 
 #### Spec Fields
@@ -74,6 +86,7 @@ spec:
 | `severity` | []string | No | Severity filter. Valid values: `info`, `low`, `medium`, `high`, `critical` |
 | `schedule` | string | No | Cron schedule for periodic rescanning |
 | `suspend` | bool | No | When true, suspends scheduled scans |
+| `scannerConfig` | [ScannerConfig](#scannerconfig) | No | Scanner-specific configuration overrides |
 
 #### Schedule Format
 
@@ -110,6 +123,12 @@ status:
   lastScanTime: "2024-01-15T10:30:00Z"
   completionTime: "2024-01-15T10:35:00Z"
   nextScheduledTime: "2024-01-16T10:30:00Z"
+  scanStartTime: "2024-01-15T10:30:05Z"
+  jobRef:
+    name: my-app-scan-abc123
+    uid: "job-uid-12345"
+    podName: my-app-scan-abc123-xyz
+    startTime: "2024-01-15T10:30:00Z"
   summary:
     totalFindings: 3
     findingsBySeverity:
@@ -127,6 +146,7 @@ status:
       timestamp: "2024-01-15T10:32:00Z"
   lastError: ""
   observedGeneration: 1
+  retryCount: 0
 ```
 
 #### Status Fields
@@ -138,10 +158,14 @@ status:
 | `lastScanTime` | *Time | When the last scan was initiated |
 | `completionTime` | *Time | When the last scan completed |
 | `nextScheduledTime` | *Time | When the next scheduled scan will run |
+| `scanStartTime` | *Time | When the scanner pod actually started scanning |
+| `jobRef` | *[JobReference](#jobreference) | Reference to the current or last scanner job |
 | `summary` | *[ScanSummary](#scansummary) | Aggregated scan statistics |
 | `findings` | [][Finding](#finding) | Array of scan results |
 | `lastError` | string | Error message if the scan failed |
 | `observedGeneration` | int64 | Generation observed by the controller |
+| `retryCount` | int | Number of consecutive availability check retries |
+| `lastRetryTime` | *Time | When the last availability check retry occurred |
 
 #### Conditions
 
@@ -187,6 +211,82 @@ type SourceReference struct {
 | `name` | string | Yes | Name of the source resource |
 | `namespace` | string | Yes | Namespace of the source resource |
 | `uid` | string | Yes | UID of the source resource |
+
+### ScannerConfig
+
+`ScannerConfig` defines scanner-specific configuration that can override default settings.
+
+```go
+type ScannerConfig struct {
+    Image        string                       `json:"image,omitempty"`
+    Resources    *corev1.ResourceRequirements `json:"resources,omitempty"`
+    Timeout      *metav1.Duration             `json:"timeout,omitempty"`
+    TemplateURLs []string                     `json:"templateURLs,omitempty"`
+    NodeSelector map[string]string            `json:"nodeSelector,omitempty"`
+    Tolerations  []corev1.Toleration          `json:"tolerations,omitempty"`
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `image` | string | No | Override the default scanner image |
+| `resources` | ResourceRequirements | No | Resource requirements for the scanner pod |
+| `timeout` | Duration | No | Override the default scan timeout |
+| `templateURLs` | []string | No | Additional template repositories to clone |
+| `nodeSelector` | map[string]string | No | Node selector for scanner pod scheduling |
+| `tolerations` | []Toleration | No | Tolerations for scanner pod scheduling |
+
+**Example:**
+
+```yaml
+scannerConfig:
+  image: "ghcr.io/custom/scanner:v1.0.0"
+  timeout: "1h"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  nodeSelector:
+    node-type: scanner
+  tolerations:
+    - key: "dedicated"
+      operator: "Equal"
+      value: "scanner"
+      effect: "NoSchedule"
+```
+
+### JobReference
+
+`JobReference` contains information about the scanner job for tracking and debugging.
+
+```go
+type JobReference struct {
+    Name      string       `json:"name"`
+    UID       string       `json:"uid"`
+    PodName   string       `json:"podName,omitempty"`
+    StartTime *metav1.Time `json:"startTime,omitempty"`
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Name of the Kubernetes Job |
+| `uid` | string | Yes | UID of the Job |
+| `podName` | string | No | Name of the scanner pod (for log retrieval) |
+| `startTime` | *Time | No | When the job was created |
+
+**Example:**
+
+```yaml
+jobRef:
+  name: my-scan-abc123
+  uid: "12345678-1234-1234-1234-123456789012"
+  podName: my-scan-abc123-xyz
+  startTime: "2024-01-15T10:30:00Z"
+```
 
 ### Finding
 

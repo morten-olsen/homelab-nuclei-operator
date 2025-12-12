@@ -33,6 +33,7 @@ import (
 	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
 	nucleiv1alpha1 "github.com/mortenolsen/nuclei-operator/api/v1alpha1"
+	"github.com/mortenolsen/nuclei-operator/internal/annotations"
 )
 
 // VirtualServiceReconciler reconciles VirtualService objects and creates NucleiScan resources
@@ -61,12 +62,8 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Extract target URLs from the VirtualService
-	targets := extractURLsFromVirtualService(virtualService)
-	if len(targets) == 0 {
-		log.Info("No targets extracted from VirtualService, skipping NucleiScan creation")
-		return ctrl.Result{}, nil
-	}
+	// Parse annotations to get scan configuration
+	scanConfig := annotations.ParseAnnotations(virtualService.Annotations)
 
 	// Define the NucleiScan name based on the VirtualService name
 	nucleiScanName := fmt.Sprintf("%s-scan", virtualService.Name)
@@ -83,23 +80,48 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Check if scanning is disabled via annotations
+	if !scanConfig.IsEnabled() {
+		// Scanning disabled - delete existing NucleiScan if it exists
+		if err == nil {
+			log.Info("Scanning disabled via annotation, deleting existing NucleiScan", "nucleiScan", nucleiScanName)
+			if err := r.Delete(ctx, existingScan); err != nil && !apierrors.IsNotFound(err) {
+				log.Error(err, "Failed to delete NucleiScan")
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Extract target URLs from the VirtualService
+	targets := extractURLsFromVirtualService(virtualService)
+	if len(targets) == 0 {
+		log.Info("No targets extracted from VirtualService, skipping NucleiScan creation")
+		return ctrl.Result{}, nil
+	}
+
 	if apierrors.IsNotFound(err) {
 		// Create a new NucleiScan
+		spec := nucleiv1alpha1.NucleiScanSpec{
+			SourceRef: nucleiv1alpha1.SourceReference{
+				APIVersion: "networking.istio.io/v1beta1",
+				Kind:       "VirtualService",
+				Name:       virtualService.Name,
+				Namespace:  virtualService.Namespace,
+				UID:        string(virtualService.UID),
+			},
+			Targets: targets,
+		}
+
+		// Apply annotation configuration to the spec
+		scanConfig.ApplyToNucleiScanSpec(&spec)
+
 		nucleiScan := &nucleiv1alpha1.NucleiScan{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      nucleiScanName,
 				Namespace: virtualService.Namespace,
 			},
-			Spec: nucleiv1alpha1.NucleiScanSpec{
-				SourceRef: nucleiv1alpha1.SourceReference{
-					APIVersion: "networking.istio.io/v1beta1",
-					Kind:       "VirtualService",
-					Name:       virtualService.Name,
-					Namespace:  virtualService.Namespace,
-					UID:        string(virtualService.UID),
-				},
-				Targets: targets,
-			},
+			Spec: spec,
 		}
 
 		// Set owner reference for garbage collection
@@ -117,18 +139,31 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// NucleiScan exists - check if targets need to be updated
+	// NucleiScan exists - check if it needs to be updated
+	needsUpdate := false
+
+	// Check if targets changed
 	if !reflect.DeepEqual(existingScan.Spec.Targets, targets) {
 		existingScan.Spec.Targets = targets
-		// Also update the SourceRef UID in case it changed (e.g., VirtualService was recreated)
-		existingScan.Spec.SourceRef.UID = string(virtualService.UID)
+		needsUpdate = true
+	}
 
+	// Also update the SourceRef UID in case it changed (e.g., VirtualService was recreated)
+	if existingScan.Spec.SourceRef.UID != string(virtualService.UID) {
+		existingScan.Spec.SourceRef.UID = string(virtualService.UID)
+		needsUpdate = true
+	}
+
+	// Apply annotation configuration
+	scanConfig.ApplyToNucleiScanSpec(&existingScan.Spec)
+
+	if needsUpdate {
 		if err := r.Update(ctx, existingScan); err != nil {
-			log.Error(err, "Failed to update NucleiScan targets")
+			log.Error(err, "Failed to update NucleiScan")
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Updated NucleiScan targets for VirtualService", "nucleiScan", nucleiScanName, "targets", targets)
+		log.Info("Updated NucleiScan for VirtualService", "nucleiScan", nucleiScanName, "targets", targets)
 	}
 
 	return ctrl.Result{}, nil

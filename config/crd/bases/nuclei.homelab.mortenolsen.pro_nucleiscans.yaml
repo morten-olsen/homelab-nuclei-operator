@@ -55,6 +55,127 @@ spec:
           spec:
             description: NucleiScanSpec defines the desired state of NucleiScan
             properties:
+              scannerConfig:
+                description: ScannerConfig allows overriding scanner settings for
+                  this scan
+                properties:
+                  image:
+                    description: Image overrides the default scanner image
+                    type: string
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector for scanner pod scheduling
+                    type: object
+                  resources:
+                    description: Resources defines resource requirements for the scanner
+                      pod
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  templateURLs:
+                    description: TemplateURLs specifies additional template repositories
+                      to clone
+                    items:
+                      type: string
+                    type: array
+                  timeout:
+                    description: Timeout overrides the default scan timeout
+                    type: string
+                  tolerations:
+                    description: Tolerations for scanner pod scheduling
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    type: array
+                type: object
               schedule:
                 description: |-
                   Schedule for periodic rescanning in cron format
@@ -249,6 +370,26 @@ spec:
                   - timestamp
                   type: object
                 type: array
+              jobRef:
+                description: JobRef references the current or last scanner job
+                properties:
+                  name:
+                    description: Name of the Job
+                    type: string
+                  podName:
+                    description: PodName is the name of the scanner pod (for log retrieval)
+                    type: string
+                  startTime:
+                    description: StartTime when the job was created
+                    format: date-time
+                    type: string
+                  uid:
+                    description: UID of the Job
+                    type: string
+                required:
+                - name
+                - uid
+                type: object
               lastError:
                 description: LastError contains the error message if the scan failed
                 type: string
@@ -284,6 +425,11 @@ spec:
                   RetryCount tracks the number of consecutive availability check retries
                   Used for exponential backoff when waiting for targets
                 type: integer
+              scanStartTime:
+                description: ScanStartTime is when the scanner pod actually started
+                  scanning
+                format: date-time
+                type: string
               summary:
                 description: Summary provides aggregated scan statistics
                 properties:

@@ -7,6 +7,8 @@ This guide provides detailed instructions for using the Nuclei Operator to autom
 - [Introduction](#introduction)
 - [Installation](#installation)
 - [Basic Usage](#basic-usage)
+- [Scanner Architecture](#scanner-architecture)
+- [Annotation-Based Configuration](#annotation-based-configuration)
 - [Configuration Options](#configuration-options)
 - [Working with Ingress Resources](#working-with-ingress-resources)
 - [Working with VirtualService Resources](#working-with-virtualservice-resources)
@@ -24,10 +26,12 @@ The Nuclei Operator automates security scanning by watching for Kubernetes Ingre
 
 1. Extracts target URLs from the resource
 2. Creates a NucleiScan custom resource
-3. Executes a Nuclei security scan
+3. Creates a Kubernetes Job to execute the Nuclei security scan in an isolated pod
 4. Stores the results in the NucleiScan status
 
 This enables continuous security monitoring of your web applications without manual intervention.
+
+The operator uses a **pod-based scanning architecture** where each scan runs in its own isolated Kubernetes Job, providing better scalability, reliability, and resource control.
 
 ---
 
@@ -148,6 +152,224 @@ spec:
 ```bash
 kubectl apply -f manual-scan.yaml
 ```
+
+---
+
+## Scanner Architecture
+
+The nuclei-operator uses a pod-based scanning architecture for improved scalability and reliability:
+
+1. **Operator Pod**: Manages NucleiScan resources and creates scanner jobs
+2. **Scanner Jobs**: Kubernetes Jobs that execute nuclei scans in isolated pods
+3. **Direct Status Updates**: Scanner pods update NucleiScan status directly via the Kubernetes API
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Kubernetes Cluster                          │
+│                                                                     │
+│  ┌──────────────────┐     ┌──────────────────────────────────────┐ │
+│  │  Operator Pod    │     │           Scanner Jobs               │ │
+│  │                  │     │                                      │ │
+│  │  ┌────────────┐  │     │  ┌─────────┐  ┌─────────┐           │ │
+│  │  │ Controller │──┼─────┼─▶│  Job 1  │  │  Job 2  │  ...      │ │
+│  │  │  Manager   │  │     │  │(Scanner)│  │(Scanner)│           │ │
+│  │  └────────────┘  │     │  └────┬────┘  └────┬────┘           │ │
+│  │        │         │     │       │            │                 │ │
+│  └────────┼─────────┘     └───────┼────────────┼─────────────────┘ │
+│           │                       │            │                   │
+│           ▼                       ▼            ▼                   │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                    Kubernetes API Server                      │  │
+│  │                                                               │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │  │
+│  │  │ NucleiScan  │  │ NucleiScan  │  │ NucleiScan  │  ...      │  │
+│  │  │  Resource   │  │  Resource   │  │  Resource   │           │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘           │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Benefits
+
+- **Scalability**: Multiple scans can run concurrently across the cluster
+- **Isolation**: Each scan runs in its own pod with dedicated resources
+- **Reliability**: Scans survive operator restarts
+- **Resource Control**: Per-scan resource limits and quotas
+- **Observability**: Individual pod logs for each scan
+
+### Scanner Configuration
+
+Configure scanner behavior via Helm values:
+
+```yaml
+scanner:
+  # Enable scanner RBAC resources
+  enabled: true
+  
+  # Scanner image (defaults to operator image)
+  image: "ghcr.io/morten-olsen/nuclei-operator:latest"
+  
+  # Default scan timeout
+  timeout: "30m"
+  
+  # Maximum concurrent scan jobs
+  maxConcurrent: 5
+  
+  # Job TTL after completion (seconds)
+  ttlAfterFinished: 3600
+  
+  # Default resource requirements for scanner pods
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  
+  # Default templates to use
+  defaultTemplates: []
+  
+  # Default severity filter
+  defaultSeverity: []
+```
+
+### Per-Scan Scanner Configuration
+
+You can override scanner settings for individual scans using the `scannerConfig` field in the NucleiScan spec:
+
+```yaml
+apiVersion: nuclei.homelab.mortenolsen.pro/v1alpha1
+kind: NucleiScan
+metadata:
+  name: custom-scan
+spec:
+  sourceRef:
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    name: my-ingress
+    namespace: default
+    uid: "abc123"
+  targets:
+    - https://example.com
+  scannerConfig:
+    # Override scanner image
+    image: "custom-scanner:latest"
+    # Override timeout
+    timeout: "1h"
+    # Custom resource requirements
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    # Node selector for scanner pod
+    nodeSelector:
+      node-type: scanner
+    # Tolerations for scanner pod
+    tolerations:
+      - key: "scanner"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+```
+
+---
+
+## Annotation-Based Configuration
+
+You can configure scanning behavior for individual Ingress or VirtualService resources using annotations.
+
+### Supported Annotations
+
+| Annotation | Type | Default | Description |
+|------------|------|---------|-------------|
+| `nuclei.homelab.mortenolsen.pro/enabled` | bool | `true` | Enable/disable scanning for this resource |
+| `nuclei.homelab.mortenolsen.pro/templates` | string | - | Comma-separated list of template paths or tags |
+| `nuclei.homelab.mortenolsen.pro/severity` | string | - | Comma-separated severity filter: info,low,medium,high,critical |
+| `nuclei.homelab.mortenolsen.pro/schedule` | string | - | Cron schedule for periodic scans |
+| `nuclei.homelab.mortenolsen.pro/timeout` | duration | `30m` | Scan timeout |
+| `nuclei.homelab.mortenolsen.pro/scanner-image` | string | - | Override scanner image |
+| `nuclei.homelab.mortenolsen.pro/exclude-templates` | string | - | Templates to exclude |
+| `nuclei.homelab.mortenolsen.pro/tags` | string | - | Template tags to include |
+| `nuclei.homelab.mortenolsen.pro/exclude-tags` | string | - | Template tags to exclude |
+
+### Example Annotated Ingress
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp-ingress
+  annotations:
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    nuclei.homelab.mortenolsen.pro/severity: "medium,high,critical"
+    nuclei.homelab.mortenolsen.pro/schedule: "0 2 * * *"
+    nuclei.homelab.mortenolsen.pro/templates: "cves/,vulnerabilities/"
+spec:
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp
+                port:
+                  number: 80
+```
+
+### Example Annotated VirtualService
+
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-vs
+  annotations:
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    nuclei.homelab.mortenolsen.pro/severity: "high,critical"
+    nuclei.homelab.mortenolsen.pro/timeout: "1h"
+    nuclei.homelab.mortenolsen.pro/tags: "cve,oast"
+spec:
+  hosts:
+    - myapp.example.com
+  gateways:
+    - my-gateway
+  http:
+    - route:
+        - destination:
+            host: myapp
+            port:
+              number: 80
+```
+
+### Disabling Scanning
+
+To disable scanning for a specific resource:
+
+```yaml
+metadata:
+  annotations:
+    nuclei.homelab.mortenolsen.pro/enabled: "false"
+```
+
+This is useful when you want to temporarily exclude certain resources from scanning without removing them from the cluster.
+
+### Annotation Precedence
+
+When both annotations and NucleiScan spec fields are present, the following precedence applies:
+
+1. **NucleiScan spec fields** (highest priority) - Direct configuration in the NucleiScan resource
+2. **Annotations** - Configuration from the source Ingress/VirtualService
+3. **Helm values** - Default configuration from the operator deployment
+4. **Built-in defaults** (lowest priority) - Hardcoded defaults in the operator
 
 ---
 

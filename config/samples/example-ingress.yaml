@@ -1,6 +1,43 @@
 # Example Ingress resource that would trigger NucleiScan creation
 # When this Ingress is created, the nuclei-operator will automatically
 # create a corresponding NucleiScan resource to scan the exposed endpoints.
+#
+# The operator uses a pod-based scanning architecture where each scan
+# runs in an isolated Kubernetes Job for better scalability and reliability.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress
+  namespace: default
+  labels:
+    app.kubernetes.io/name: example-app
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    # Nuclei scanning configuration
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    nuclei.homelab.mortenolsen.pro/severity: "medium,high,critical"
+    nuclei.homelab.mortenolsen.pro/schedule: "0 2 * * *"
+    # Optional: Additional scanning configuration
+    # nuclei.homelab.mortenolsen.pro/templates: "cves/,vulnerabilities/"
+    # nuclei.homelab.mortenolsen.pro/timeout: "1h"
+    # nuclei.homelab.mortenolsen.pro/scanner-image: "custom-scanner:latest"
+    # nuclei.homelab.mortenolsen.pro/tags: "cve,oast"
+    # nuclei.homelab.mortenolsen.pro/exclude-tags: "dos"
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-service
+                port:
+                  number: 80
+---
+# Example Ingress with TLS - endpoints will be scanned with HTTPS
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -10,9 +47,10 @@ metadata:
     app.kubernetes.io/name: example-app
     app.kubernetes.io/managed-by: kustomize
   annotations:
-    # Optional: Add annotations to customize scan behavior
-    # nuclei.homelab.mortenolsen.pro/scan-enabled: "true"
-    # nuclei.homelab.mortenolsen.pro/severity: "high,critical"
+    # Nuclei scanning configuration
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    nuclei.homelab.mortenolsen.pro/severity: "high,critical"
+    nuclei.homelab.mortenolsen.pro/templates: "cves/,vulnerabilities/,exposures/"
     kubernetes.io/ingress.class: nginx
 spec:
   # TLS configuration - endpoints will be scanned with HTTPS
@@ -52,8 +90,8 @@ spec:
                 port:
                   number: 8080
 ---
-# Example Ingress without TLS (HTTP only)
-# This will be scanned with HTTP scheme
+# Example Ingress with scanning disabled
+# This will NOT trigger a NucleiScan creation
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -61,6 +99,9 @@ metadata:
   namespace: default
   labels:
     app.kubernetes.io/name: internal-app
+  annotations:
+    # Disable scanning for this internal resource
+    nuclei.homelab.mortenolsen.pro/enabled: "false"
 spec:
   rules:
     - host: internal.example.local
@@ -73,3 +114,44 @@ spec:
                 name: internal-app
                 port:
                   number: 80
+---
+# Example Ingress with full annotation configuration
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fully-configured-ingress
+  namespace: default
+  labels:
+    app.kubernetes.io/name: configured-app
+  annotations:
+    # Enable scanning
+    nuclei.homelab.mortenolsen.pro/enabled: "true"
+    # Severity filter - only report medium and above
+    nuclei.homelab.mortenolsen.pro/severity: "medium,high,critical"
+    # Schedule daily scans at 2 AM
+    nuclei.homelab.mortenolsen.pro/schedule: "0 2 * * *"
+    # Use specific template directories
+    nuclei.homelab.mortenolsen.pro/templates: "cves/,vulnerabilities/,misconfiguration/"
+    # Set scan timeout to 1 hour
+    nuclei.homelab.mortenolsen.pro/timeout: "1h"
+    # Include specific tags
+    nuclei.homelab.mortenolsen.pro/tags: "cve,oast,sqli,xss"
+    # Exclude certain tags
+    nuclei.homelab.mortenolsen.pro/exclude-tags: "dos,fuzz"
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+    - hosts:
+        - secure.example.com
+      secretName: secure-tls-secret
+  rules:
+    - host: secure.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: secure-app
+                port:
+                  number: 443

@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -42,6 +43,50 @@ type SourceReference struct {
 	// UID of the source resource for owner reference
 	// +kubebuilder:validation:Required
 	UID string `json:"uid"`
+}
+
+// ScannerConfig defines scanner-specific configuration
+type ScannerConfig struct {
+	// Image overrides the default scanner image
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Resources defines resource requirements for the scanner pod
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Timeout overrides the default scan timeout
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// TemplateURLs specifies additional template repositories to clone
+	// +optional
+	TemplateURLs []string `json:"templateURLs,omitempty"`
+
+	// NodeSelector for scanner pod scheduling
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations for scanner pod scheduling
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+}
+
+// JobReference contains information about the scanner job
+type JobReference struct {
+	// Name of the Job
+	Name string `json:"name"`
+
+	// UID of the Job
+	UID string `json:"uid"`
+
+	// PodName is the name of the scanner pod (for log retrieval)
+	// +optional
+	PodName string `json:"podName,omitempty"`
+
+	// StartTime when the job was created
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
 }
 
 // NucleiScanSpec defines the desired state of NucleiScan
@@ -73,6 +118,10 @@ type NucleiScanSpec struct {
 	// Suspend prevents scheduled scans from running
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+
+	// ScannerConfig allows overriding scanner settings for this scan
+	// +optional
+	ScannerConfig *ScannerConfig `json:"scannerConfig,omitempty"`
 }
 
 // ScanPhase represents the current phase of the scan
@@ -200,6 +249,14 @@ type NucleiScanStatus struct {
 	// LastRetryTime is when the last availability check retry occurred
 	// +optional
 	LastRetryTime *metav1.Time `json:"lastRetryTime,omitempty"`
+
+	// JobRef references the current or last scanner job
+	// +optional
+	JobRef *JobReference `json:"jobRef,omitempty"`
+
+	// ScanStartTime is when the scanner pod actually started scanning
+	// +optional
+	ScanStartTime *metav1.Time `json:"scanStartTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

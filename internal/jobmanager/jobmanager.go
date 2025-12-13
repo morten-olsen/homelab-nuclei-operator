@@ -460,14 +460,6 @@ func (m *JobManager) buildJob(scan *nucleiv1alpha1.NucleiScan) *batchv1.Job {
 										},
 									},
 								},
-								{
-									Name:  "NUCLEI_BINARY_PATH",
-									Value: "/usr/local/bin/nuclei",
-								},
-								{
-									Name:  "NUCLEI_TEMPLATES_PATH",
-									Value: "", // Empty means use default location (~/.nuclei/templates)
-								},
 							},
 						},
 					},

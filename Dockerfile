@@ -60,6 +60,7 @@ USER 65532:65532
 
 # Environment variables for nuclei
 ENV NUCLEI_TEMPLATES_PATH=/nuclei-templates
+ENV NUCLEI_BINARY_PATH=/usr/local/bin/nuclei
 ENV HOME=/home/nonroot
 
 ENTRYPOINT ["/manager"]

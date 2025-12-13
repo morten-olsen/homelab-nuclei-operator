@@ -118,8 +118,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	logger.Info("Starting scan",
 		"targets", len(scan.Spec.Targets),
+		"targetList", scan.Spec.Targets,
 		"templates", scan.Spec.Templates,
-		"severity", scan.Spec.Severity)
+		"templatesCount", len(scan.Spec.Templates),
+		"severity", scan.Spec.Severity,
+		"severityCount", len(scan.Spec.Severity))
 
 	// Update status to indicate scan has started
 	startTime := metav1.Now()

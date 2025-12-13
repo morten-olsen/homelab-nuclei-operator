@@ -122,13 +122,23 @@ func (s *NucleiScanner) Scan(ctx context.Context, targets []string, options Scan
 	logger.Info("Targets file created", "targetsFile", targetsFile, "targetCount", len(targets))
 
 	// Check if nuclei binary exists and is executable
+	// First try the exact path
 	if _, err := os.Stat(s.nucleiBinaryPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("nuclei binary not found at %s", s.nucleiBinaryPath)
+		// If not found at exact path, try to find it in PATH
+		if path, err := exec.LookPath(s.nucleiBinaryPath); err == nil {
+			logger.Info("Found nuclei binary in PATH", "path", path, "originalPath", s.nucleiBinaryPath)
+			s.nucleiBinaryPath = path
+		} else {
+			return nil, fmt.Errorf("nuclei binary not found at %s and not in PATH: %w", s.nucleiBinaryPath, err)
+		}
 	}
 
-	// Verify nuclei is executable
+	// Verify nuclei is executable by running version command
 	if err := exec.Command(s.nucleiBinaryPath, "-version").Run(); err != nil {
-		logger.Error(err, "Failed to execute nuclei -version, nuclei may not be properly installed")
+		logger.Error(err, "Failed to execute nuclei -version, nuclei may not be properly installed", "path", s.nucleiBinaryPath)
+		// Don't fail here, just log - the actual scan will fail if nuclei is truly broken
+	} else {
+		logger.Info("Nuclei binary verified", "path", s.nucleiBinaryPath)
 	}
 
 	// Check templates availability if templates path is set

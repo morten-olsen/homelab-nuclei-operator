@@ -521,3 +521,8 @@ limitations under the License.
 - [Nuclei](https://github.com/projectdiscovery/nuclei) - The vulnerability scanner powering this operator
 - [Kubebuilder](https://book.kubebuilder.io/) - Framework used to build this operator
 - [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) - Kubernetes controller library
+
+## Release ownership
+
+See [Operator releases](docs/releases.md) for approved Forgejo tags, publication
+checks, version immutability and recovery. Main merges validate without publishing.
